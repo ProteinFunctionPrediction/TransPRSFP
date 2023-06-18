@@ -2,7 +2,7 @@
 
 In this study, the transformer model has been trained for regional protein function prediction problem. Also, a model that uses a classification head on top of the encoder of the [ProtT5-XL-UniRef50](https://github.com/agemagician/ProtTrans) model has been implemented for prediction of protein functions at protein level.
 
-The Python script provided in this repository makes it possible to train both types of models and perform predictions using pretrained models.
+The Python script provided in this repository makes it possible to train both types of models and perform predictions using pre-trained models.
 
 ## Getting Started
 The recommended Python version is 3.8.10 since the script has been tested by using this version.
@@ -28,18 +28,18 @@ $ pip install -r requirements.txt
 The script has the following main usages:
  - Training the classification head model on non-regional datasets
  - Training the transformer model on regional datasets
- - Running a pretrained classification head model in inference mode
- - Running a pretrained transformer model in inference mode
- - Running a pretrained classification head model and a pretrained transformer model together in inference mode to produce both regional and non-regional predictions.
+ - Running a pre-trained classification head model in inference mode
+ - Running a pre-trained transformer model in inference mode
+ - Running a pre-trained classification head model and a pre-trained transformer model together in inference mode to produce both regional and non-regional predictions.
 
 Note: For each of the main usages specified above, the [ProtT5-XL-UniRef50](https://github.com/agemagician/ProtTrans) encoder model is needed. You can download it using the following link: [https://drive.google.com/file/d/1PnPtgdzkopjdjNS6XMLhjyS9bioMT2Kq/view?usp=sharing](https://drive.google.com/file/d/1PnPtgdzkopjdjNS6XMLhjyS9bioMT2Kq/view?usp=sharing)
 
-You can extract the folder of the encoder model from the archive using the following command:
+You can extract the encoder model folder from the archive using the following command:
 ```bash
 $ tar xvf Rostlab_prot_t5_xl_uniref50.tar.xz
 ```
 
-For each main usage specified above, a section exists below.
+There is a section below for each of the main uses listed above.
 
 For seeing the usage of the script, the following command can be executed:
 ```bash
@@ -103,9 +103,9 @@ arguments:
 
 
 ## Models
-- For accessing pretrained classification head models, the following link can be used: [https://drive.google.com/drive/folders/1gRi7TBrwZfnfvXU21vtj8s5F4z5D9pXM?usp=sharing](https://drive.google.com/drive/folders/1gRi7TBrwZfnfvXU21vtj8s5F4z5D9pXM?usp=sharing)
+- For accessing pre-trained classification head models, the following link can be used: [https://drive.google.com/drive/folders/1gRi7TBrwZfnfvXU21vtj8s5F4z5D9pXM?usp=sharing](https://drive.google.com/drive/folders/1gRi7TBrwZfnfvXU21vtj8s5F4z5D9pXM?usp=sharing)
 
-- For accessing pretrained transformer models, the following link can be used: [https://drive.google.com/drive/folders/1ey8pZufHIV3bQAWjJ8yGnWABGkjFp4ta?usp=sharing](https://drive.google.com/drive/folders/1ey8pZufHIV3bQAWjJ8yGnWABGkjFp4ta?usp=sharing)
+- For accessing pre-trained transformer models, the following link can be used: [https://drive.google.com/drive/folders/1ey8pZufHIV3bQAWjJ8yGnWABGkjFp4ta?usp=sharing](https://drive.google.com/drive/folders/1ey8pZufHIV3bQAWjJ8yGnWABGkjFp4ta?usp=sharing)
 
 ## Dataset Format
  - This script uses the datasets prepared in a specific format and saved as a binary object file using the pickle module.
