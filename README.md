@@ -1,4 +1,4 @@
-# Sequence Region Specific Prediction of Protein Functions
+# TransPRSFP: Machine Translation-Based Protein Region-Specific Function Prediction
 
 In this study, the transformer model has been trained for regional protein function prediction problem. Also, a model that uses a classification head on top of the encoder of the [ProtT5-XL-UniRef50](https://github.com/agemagician/ProtTrans) model has been implemented for prediction of protein functions at protein level.
 
