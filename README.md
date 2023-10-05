@@ -1,6 +1,10 @@
 # TransPRSFP: Machine Translation-Based Protein Region-Specific Function Prediction
 
-In this study, the transformer model has been trained for regional protein function prediction problem. Also, a model that uses a classification head on top of the encoder of the [ProtT5-XL-UniRef50](https://github.com/agemagician/ProtTrans) model has been implemented for prediction of protein functions at protein level.
+
+Knowledge regarding the functions carried out by proteins are essential to understand biological mechanisms and to enable effective disease research. The gene ontology (GO) system is utilised for annotating gene/protein functions. Proteins are modular and composed of structural and functional blocks called domains. Many proteins are multi-domain, which have multiple functions. These functions are localised to certain regions on the sequence/structure. The existing research on protein function prediction focuses on protein level annotations (i.e., predicting a function for the whole sequence), ignoring which part of the protein is responsible for the function of interest. The aim of this study is to develop a deep learning-based method to predict protein functions at the residue level, as well as protein level. Protein level predictions are conducted by our classification model which takes [ProtT5-XL-UniRef50](https://github.com/agemagician/ProtTrans) language model embeddings of protein sequences as input and predicts their GO term-basedfunctions via running them through a series of linear layers (feed forward network) (Figure 1A). For residue level (region specific) predictions, which constitutes our main novelty, we adopted the machine translation approach in natural language processing and utilised transformer decoder blocks which takes ProtT5_XL sequence embeddings (i.e., input sentences in the source language) at the residue level together with GO term embeddings (i.e., sentences in the target language) and predicts a GO term for each input residue, meaning that the residue of interest belong to a region which carries out the predicted function (Figure 1B). Finally, we created a hybrid model that directly merges predictions from both models (Figure 1C). As training and test datasets, we employed protein level GO annotations from UniProt-GOA and residue/domain level annotations from InterPro. Considering model test performances (in terms of average F1-score); residue-level, protein- level, and merged models achieved 0.53, 0.38, and 0.47, respectively. Protein level model had a higher performance; however, adding residue level estimations increased both the coverage and the specificity of predictions.
+
+![Figure](./figure.jpg)
+**Figure.** Models developed in scope of this research; (A) the feed-forward neural network-based classification model that performs protein-level function prediction; (B) the transformer-based model that performs sequence region level function prediction; and (C) the hybrid model constitutes classification and transformer-based models together to increase function prediction coverage and specificity.
 
 The Python script provided in this repository makes it possible to train both types of models and perform predictions using pre-trained models.
 
@@ -393,6 +397,12 @@ The sample outputs produced by the command above is as follows:
 ```
 
 In the output above, the script first loads and executes the classification head model. Then, the transformer model is loaded and executed. After that, the merged results are listed at the end.
+
+## References
+ - https://www.youtube.com/watch?v=U0s0f995w14
+ - https://towardsdatascience.com/a-detailed-guide-to-pytorchs-nn-transformer-module-c80afbc9ffb1
+ - https://medium.com/the-dl/transformers-from-scratch-in-pytorch-8777e346ca51
+ - https://towardsdatascience.com/how-to-code-the-transformer-in-pytorch-24db27c8f9ec
 
 ## Our Website
 You can access our website [here](https://proteinfunctionprediction.com)
