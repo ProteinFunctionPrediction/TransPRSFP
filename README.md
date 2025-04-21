@@ -219,7 +219,7 @@ $ CUDA_VISIBLE_DEVICES=0 python3 main.py --inference --device cuda --model-type 
 Notice that the dataset being used is **../test_annotated_dataset.pkl** this time as it is necessary to provide an annotated dataset for the computation of metrics.
 
 ### Reproducing the Results in Table 1
-It is possible to reproduce the results provided in Table 1 by executing the following commands for BP, MF, and CC classes, respectively. Three commands, one per GO category, will be provided below, along with their corresponding outputs in an abbreviated format.
+It is possible to reproduce the results provided in Table 1 by executing the following commands for BP, MF, and CC classes, respectively.
 
 To be able to get the same results as in Table 1, you need to make sure that you have downloaded the pre-trained models from the link provided in the **Models** section and that you are providing the script with the correct paths to the models. Also, the corresponding test sets should be downloaded from the link provided in the **Datasets** section and used accordingly, taking into account the GO categories on which the inference is performed.
 
