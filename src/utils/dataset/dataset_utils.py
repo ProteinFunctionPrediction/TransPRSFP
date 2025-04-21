@@ -100,3 +100,48 @@ class DatasetUtils:
             y.append(y_elem)
         
         return np.asarray(X), np.asarray(y)
+
+    @staticmethod
+    def count_go_term_datapoints(dataset):
+        result = {}
+        for prot_seq, go_terms in dataset:
+            s = set(go_terms.split()[1:-1])
+            for go_term in s:
+                if go_term not in result:
+                    result[go_term] = 0
+                result[go_term] += 1
+        return result
+
+    @staticmethod
+    def split_train_val(dataset, val_count):
+        val = []
+        counts = DatasetUtils.count_go_term_datapoints(dataset)
+        remove_proteins = set()
+        count = 0
+        for i in dataset:
+            prot_seq, go_terms = i
+            s = set(go_terms.split()[1:-1])
+            skip = False
+            for go_term in s:
+                if counts[go_term] <= 1:
+                    skip = True
+                    break
+            if skip:
+                continue
+
+            for go_term in s:
+                counts[go_term] -= 1
+            val.append(i)
+            remove_proteins.add(prot_seq)
+            count += 1
+
+            if count == val_count:
+                break
+
+        train = []
+        for i in dataset:
+            prot_seq, go_terms = i
+            if prot_seq not in remove_proteins:
+                train.append(i)
+
+        return np.asarray(train), np.asarray(val)

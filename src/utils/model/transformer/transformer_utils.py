@@ -19,9 +19,51 @@ class TransformerUtils(ModelUtils):
     def __init__(self, device) -> None:
         super().__init__(device)
     
-    def run_transformer_prediction(self, batches, model: Transformer, batch_size=8, caller=None):
+    def run_transformer_prediction(self,
+                                   batches,
+                                   model: Transformer,
+                                   pred_SOS_token_id,
+                                   pred_EOS_token_id,
+                                   pred_EMPTY_token_id,
+                                   pred_reverse_word_index,
+                                   true_SOS_token_id,
+                                   true_EOS_token_id,
+                                   true_EMPTY_token_id,
+                                   true_reverse_word_index,
+                                   batch_size=8,
+                                   caller=None,
+                                   prefix="",
+                                   compute_go_based_metrics=False,
+                                   save_go_based_metrics=True,
+                                   go_based_metrics_filepath="",
+                                   compute_metrics=False):
+    
+        if compute_metrics:
+            assert true_SOS_token_id is not None
+            assert true_EOS_token_id is not None
+            assert true_EMPTY_token_id is not None
+    
+        total_go_term_count = len(pred_reverse_word_index) - 1
         dataloader = batches
         predictions = []
+        
+        if compute_go_based_metrics:
+            go_based_metrics = Utils.build_go_based_metrics_map_from_reverse_go_term_indices(pred_reverse_word_index,
+                                                                                             true_reverse_word_index)
+        
+        
+        total_sample_count = 0
+        running_metrics = {prefix + "precision": 0.0,
+                           prefix + "recall": 0.0,
+                           prefix + "accuracy": 0.0,
+                           prefix + "f1": 0.0,
+                           prefix + "match_ratio": 0.0,
+                           prefix + "match_ratio_nonempty": 0.0,
+                           prefix + "token_based_precision": 0.0,
+                           prefix + "token_based_accuracy": 0.0,
+                           prefix + "token_based_recall": 0.0,
+                           prefix + "token_based_f1": 0.0}
+        
         with torch.no_grad():
             for batch_idx in range(len(dataloader)):
                 batch = dataloader[batch_idx]
@@ -33,22 +75,106 @@ class TransformerUtils(ModelUtils):
                     sample_X = X[idx].unsqueeze(0)
                     sample_y = y[idx][y[idx] != Settings.TRANSFORMER_TRG_PAD_IDX][1:-1]
                         
-                    prediction = self.predict(model, sample_X,
-                                        SOS_token=model.config.sos_token,
-                                        EOS_token=model.config.eos_token,
-                                        max_length=len(sample_X[0][sample_X[0] != 0]))[1:-1]
+                    prediction = self.predict(model,
+                                              sample_X,
+                                              SOS_token=pred_SOS_token_id,
+                                              EOS_token=pred_EOS_token_id,
+                                              max_length=len(sample_X[0][sample_X[0] != 0]))[1:-1]
                         
                     predictions.append(prediction)
+
+                    if len(sample_y) > 0 and sample_y[0] == true_SOS_token_id:
+                        sample_y = sample_y[1:]
+                
+                    if len(sample_y) > 0 and sample_y[-1] == true_EOS_token_id:
+                        sample_y = sample_y[:-1]
+                        
+                    
+                    if compute_metrics:
+                        assert len(prediction) == len(sample_y)
+                        unique_prediction = list(np.unique(np.asarray(prediction)))
+                        
+                        sample_y_str_list = Utils.convert_idx_list_to_strings(sample_y, true_reverse_word_index)
+                        unique_prediction_str_list = Utils.convert_idx_list_to_strings(unique_prediction, pred_reverse_word_index)
+                        prediction_str_list = Utils.convert_idx_list_to_strings(prediction[:len(sample_y)], pred_reverse_word_index)
+
+                        fp, tp, fn, tn = Utils.get_fp_tp_fn_tn(sample_y_str_list,
+                                                               unique_prediction_str_list,
+                                                               total_go_term_count,
+                                                               true_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper(),
+                                                               pred_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper())
+                        precision_score, recall_score, accuracy_score = Utils.precision(tp, fp), Utils.recall(tp, fn), Utils.accuracy(fp, tp, fn, tn)
+                        f1_score = Utils.f1(precision_score, recall_score)
+                    
+                        match_ratio_score = Utils.match_ratio(sample_y_str_list, prediction_str_list)
+                        match_ratio_nonempty_score = Utils.match_ratio_nonempty(sample_y_str_list, prediction_str_list, true_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper())
+
+                        # _t: abbreviation for _token
+                        fp_t, tp_t, fn_t, tn_t = Utils.get_fp_tp_fn_tn_token_based(sample_y_str_list,
+                                                                                   prediction_str_list,
+                                                                                   total_go_term_count,
+                                                                                   true_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper(),
+                                                                                   pred_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper())
+                        precision_score_t, recall_score_t, accuracy_score_t = Utils.precision(tp_t, fp_t), Utils.recall(tp_t, fn_t), \
+                                                                            Utils.accuracy(fp_t, tp_t, fn_t, tn_t)
+                        f1_score_t = Utils.f1(precision_score_t, recall_score_t)
+                    
+                        if compute_go_based_metrics:
+                            Utils.update_go_based_metrics_map(sample_y_str_list,
+                                                              prediction_str_list,
+                                                              go_based_metrics)
+                    
+                        running_metrics["precision"] += precision_score
+                        running_metrics["recall"] += recall_score
+                        running_metrics["accuracy"] += accuracy_score
+                        running_metrics["f1"] += f1_score
+                    
+
+                        running_metrics["match_ratio"] += match_ratio_score
+                        running_metrics["match_ratio_nonempty"] += match_ratio_nonempty_score
+                        running_metrics["token_based_precision"] += precision_score_t
+                        running_metrics["token_based_recall"] += recall_score_t
+                        running_metrics["token_based_accuracy"] += accuracy_score_t
+                        running_metrics["token_based_f1"] += f1_score_t
+                        total_sample_count += 1
+                        
+                        print({"count": total_sample_count,
+                               "precision": precision_score,
+                               "recall": recall_score,
+                               "accuracy": accuracy_score,
+                               "f1": f1_score,
+                               "match_ratio": match_ratio_score,
+                               "match_ratio_nonempty": match_ratio_nonempty_score,
+                               "token_based_precision": precision_score_t,
+                               "token_based_recall": recall_score_t,
+                               "token_based_accuracy": accuracy_score_t,
+                               "token_based_f1": f1_score_t})
                     
                     if caller is not None:
-                        caller.notify(count - 1, 
-                                      self.post_process_prediction_as_str(
-                                          self.post_process_prediction(
-                                              model, prediction, 
-                                              model.config.go_term_to_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None))))
+                        caller.notify(count - 1, self.post_process_prediction_as_str(self.post_process_prediction(model, prediction, pred_EMPTY_token_id)))
                     
-        
-        return predictions
+            average_metrics = {}
+            if compute_metrics:
+                for key, value in running_metrics.items():
+                    average_metrics[key] = value/total_sample_count
+
+            if compute_go_based_metrics and save_go_based_metrics and go_based_metrics_filepath != "":
+                if os.path.exists(go_based_metrics_filepath):
+                    print(f"{go_based_metrics_filepath} already exists! Won't save GO term-based metrics:")
+                    print(go_based_metrics)
+                else:
+                    try:
+                        with open(go_based_metrics_filepath, "wb") as go_based_metrics_file:
+                            pickle.dump(go_based_metrics, go_based_metrics_file)
+                    except Exception as e:
+                        print(f"An error occurred while saving GO term-based metrics to {os.path.abspath(go_based_metrics_filepath)}: {str(e)}")
+                    else:
+                        print(f"GO term-based metrics have been saved to {os.path.abspath(go_based_metrics_filepath)}")
+            elif compute_go_based_metrics:
+                print("GO term-based metrics:")
+                print(go_based_metrics)
+
+        return average_metrics, predictions
 
     def predict(self, model, input_sequence, max_length, SOS_token, EOS_token, output_attentions=False):
         model.eval()
@@ -107,7 +233,7 @@ class TransformerUtils(ModelUtils):
         result = dict()
         for key, value in go_term_to_region.items():
             regions = [[i[0] + 1, i[1] + 1] for i in value]
-            result[model.config.reverse_go_term_to_index[key]] = regions
+            result[model.get_config().reverse_go_term_to_index[key]] = regions
         
         return result
 
@@ -238,7 +364,29 @@ class TransformerUtils(ModelUtils):
 
         return total_loss / m, average_metrics, total_sample_count + last_n
     
-    def fit(self, model, opt, loss_fn, train_dataloader, val_dataloader, epochs, writer, total_go_term_count, sos_token, eos_token, logger, evaluate_while_training=False, trg_pad_idx=0, save_per_epoch=None, model_save_dir=None, model_checkpoint_name_prefix=None):
+    def fit(self,
+            model,
+            opt,
+            loss_fn,
+            train_dataloader,
+            val_dataloader,
+            epochs,
+            writer,
+            total_go_term_count,
+            pred_SOS_token_id,
+            pred_EOS_token_id,
+            pred_EMPTY_token_id,
+            pred_reverse_word_index,
+            true_SOS_token_id,
+            true_EOS_token_id,
+            true_EMPTY_token_id,
+            true_reverse_word_index,
+            logger,
+            evaluate_while_training=False,
+            trg_pad_idx=0,
+            save_per_epoch=None,
+            model_save_dir=None,
+            model_checkpoint_name_prefix=None):
         train_loss_list, validation_loss_list = [], []
         
         print("Training and validating model")
@@ -274,7 +422,20 @@ class TransformerUtils(ModelUtils):
             writer.add_scalar("f1-score on validation set", average_metrics["f1"], epoch + 1)
             writer.add_scalar("accuracy on validation set", average_metrics["accuracy"], epoch + 1)
 
-            average_metrics, last_n_calculate_metrics = self.calculate_metrics(model, val_dataloader, sos_token, eos_token, total_go_term_count, writer, logger, last_n_calculate_metrics)
+            average_metrics, last_n_calculate_metrics = self.calculate_metrics(model,
+                                                                               val_dataloader,
+                                                                               pred_SOS_token_id,
+                                                                               pred_EOS_token_id,
+                                                                               pred_EMPTY_token_id,
+                                                                               pred_reverse_word_index,
+                                                                               true_SOS_token_id,
+                                                                               true_EOS_token_id,
+                                                                               true_EMPTY_token_id,
+                                                                               true_reverse_word_index,
+                                                                               total_go_term_count,
+                                                                               writer,
+                                                                               logger,
+                                                                               last_n_calculate_metrics)
             for key in average_metrics.keys():
                 writer.add_scalar(key, average_metrics[key], epoch + 1)
             
@@ -289,16 +450,35 @@ class TransformerUtils(ModelUtils):
 
         return train_loss_list, validation_loss_list
     
-    def calculate_metrics(self, model, dataloader, sos_token, eos_token, total_go_term_count, writer, logger=None, last_n=0, sample_limit=1
-                      , empty_token=-1, trg_pad_idx=0):
+    def calculate_metrics(self,
+                          model,
+                          dataloader,
+                          pred_SOS_token_id,
+                          pred_EOS_token_id,
+                          pred_EMPTY_token_id,
+                          pred_reverse_word_index,
+                          true_SOS_token_id,
+                          true_EOS_token_id,
+                          true_EMPTY_token_id,
+                          true_reverse_word_index,
+                          total_go_term_count,
+                          writer,
+                          logger=None,
+                          last_n=0,
+                          sample_limit=1,
+                          trg_pad_idx=0):
         
         total_sample_count = 0
-        running_metrics = {"precision": 0.0, "recall": 0.0, "accuracy": 0.0, "f1": 0.0, "match_ratio": 0.0,
-                        "match_ratio_nonempty": 0.0,
-                        "token_based_precision": 0.0,
-                        "token_based_accuracy": 0.0,
-                        "token_based_recall": 0.0,
-                        "token_based_f1": 0.0}
+        running_metrics = {"precision": 0.0,
+                           "recall": 0.0,
+                           "accuracy": 0.0,
+                           "f1": 0.0,
+                           "match_ratio": 0.0,
+                           "match_ratio_nonempty": 0.0,
+                           "token_based_precision": 0.0,
+                           "token_based_accuracy": 0.0,
+                           "token_based_recall": 0.0,
+                           "token_based_f1": 0.0}
         
         with torch.no_grad():
             for batch_idx in range(len(dataloader)):
@@ -309,21 +489,38 @@ class TransformerUtils(ModelUtils):
                     sample_X = X[idx].unsqueeze(0)
                     sample_y = y[idx][y[idx] != trg_pad_idx][1:-1]
                     
-                    prediction = self.predict(model, sample_X, SOS_token=sos_token, EOS_token=eos_token, max_length=len(sample_y)+2)[1:-1]
+                    prediction = self.predict(model,
+                                              sample_X,
+                                              SOS_token=pred_SOS_token_id,
+                                              EOS_token=pred_EOS_token_id,
+                                              max_length=len(sample_y)+2)[1:-1]
 
                     
                     unique_prediction = list(np.unique(np.asarray(prediction)))
                     
-                    fp, tp, fn, tn = Utils.get_fp_tp_fn_tn(sample_y, unique_prediction, total_go_term_count, empty_token=empty_token)
+                    sample_y_str_list = Utils.convert_idx_list_to_strings(sample_y, true_reverse_word_index)
+                    unique_prediction_str_list = Utils.convert_idx_list_to_strings(unique_prediction, pred_reverse_word_index)
+                    prediction_str_list = Utils.convert_idx_list_to_strings(prediction[:len(sample_y)], pred_reverse_word_index)
+
+                    fp, tp, fn, tn = Utils.get_fp_tp_fn_tn(sample_y_str_list,
+                                                           unique_prediction_str_list,
+                                                           total_go_term_count,
+                                                           true_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper(), 
+                                                           pred_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper())
                     precision_score, recall_score, accuracy_score = Utils.precision(tp, fp), Utils.recall(tp, fn), Utils.accuracy(fp, tp, fn, tn)
                     f1_score = Utils.f1(precision_score, recall_score)
                     
-                    match_ratio_score = Utils.match_ratio(sample_y, prediction[:len(sample_y)])
-                    match_ratio_nonempty_score = Utils.match_ratio_nonempty(sample_y, prediction[:len(sample_y)], empty_token)
+                    match_ratio_score = Utils.match_ratio(sample_y_str_list, prediction_str_list)
+                    match_ratio_nonempty_score = Utils.match_ratio_nonempty(sample_y_str_list,
+                                                                            prediction_str_list,
+                                                                            true_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper())
 
                     # _t: abbreviation for _token
-                    fp_t, tp_t, fn_t, tn_t = Utils.get_fp_tp_fn_tn_token_based(sample_y, prediction[:len(sample_y)],
-                                                total_go_term_count, empty_token=empty_token)
+                    fp_t, tp_t, fn_t, tn_t = Utils.get_fp_tp_fn_tn_token_based(sample_y_str_list,
+                                                                               prediction_str_list,
+                                                                               total_go_term_count,
+                                                                               true_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper(),
+                                                                               pred_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper())
                     precision_score_t, recall_score_t, accuracy_score_t = Utils.precision(tp_t, fp_t), Utils.recall(tp_t, fn_t), \
                                                                         Utils.accuracy(fp_t, tp_t, fn_t, tn_t)
                     f1_score_t = Utils.f1(precision_score_t, recall_score_t)
@@ -367,10 +564,17 @@ class TransformerUtils(ModelUtils):
         
         return average_metrics, total_sample_count + last_n
 
-    def evaluate_models(self, training_dataloader,
+    def evaluate_models(self,
+                        training_dataloader,
                         validation_dataloader,
-                        sos_token,
-                        eos_token,
+                        pred_SOS_token_id,
+                        pred_EOS_token_id,
+                        pred_EMPTY_token_id,
+                        pred_reverse_word_index,
+                        true_SOS_token_id,
+                        true_EOS_token_id,
+                        true_EMPTY_token_id,
+                        true_reverse_word_index,
                         total_go_term_count,
                         hyperparameters,
                         device,
@@ -462,21 +666,27 @@ class TransformerUtils(ModelUtils):
             writer = SummaryWriter(os.path.join(tensorboard_log_dir, model_name))
             
             train_loss_list, validation_loss_list = self.fit(model,
-                                                        optimizer,
-                                                        loss_function,
-                                                        training_dataloader,
-                                                        validation_dataloader,
-                                                        epoch,
-                                                        writer,
-                                                        total_go_term_count,
-                                                        sos_token,
-                                                        eos_token,
-                                                        logger,
-                                                        True,
-                                                        trg_pad_idx,
-                                                        save_per_epoch=save_per_epoch,
-                                                        model_save_dir=model_save_dir,
-                                                        model_checkpoint_name_prefix=model_name)
+                                                             optimizer,
+                                                             loss_function,
+                                                             training_dataloader,
+                                                             validation_dataloader,
+                                                             epoch,
+                                                             writer,
+                                                             total_go_term_count,
+                                                             pred_SOS_token_id,
+                                                             pred_EOS_token_id,
+                                                             pred_EMPTY_token_id,
+                                                             pred_reverse_word_index,
+                                                             true_SOS_token_id,
+                                                             true_EOS_token_id,
+                                                             true_EMPTY_token_id,
+                                                             true_reverse_word_index,
+                                                             logger,
+                                                             True,
+                                                             trg_pad_idx,
+                                                             save_per_epoch=save_per_epoch,
+                                                             model_save_dir=model_save_dir,
+                                                             model_checkpoint_name_prefix=model_name)
 
             writer.flush()
             writer.close()
@@ -484,21 +694,55 @@ class TransformerUtils(ModelUtils):
             if model_save_dir:
                 model.save(os.path.join(model_save_dir, model_name + "_end_of_training"))
         
-    def train(self, train_batches, validation_batches, tf_tokenizer, learning_rate, src_pad_idx, trg_pad_idx,
-                src_vocab_size, trg_vocab_size, prot_t5_model, embed_size, epoch, tensorboard_log_dir,
-                model_save_dir, save_per_epoch, go_embedding_fetcher=None, weights=None,
-                model_config:TransformerModelConfig=None):
-        self.evaluate_models(train_batches, validation_batches, 
-                                tf_tokenizer.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                tf_tokenizer.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                len(tf_tokenizer.word_index) - 1,
-                                {"lr": [learning_rate]},
-                                self.device, src_pad_idx, trg_pad_idx,
-                                src_vocab_size, trg_vocab_size, prot_t5_model,
-                                embed_size, epoch=epoch,
-                                tensorboard_log_dir=tensorboard_log_dir,
-                                model_save_dir=model_save_dir,
-                                save_per_epoch=save_per_epoch,
-                                go_embedding_fetcher=go_embedding_fetcher,
-                                weights=weights,
-                                model_config=model_config)
+    def train(self,
+              train_batches,
+              validation_batches,
+              total_go_term_count,
+              pred_SOS_token_id,
+              pred_EOS_token_id,
+              pred_EMPTY_token_id,
+              pred_reverse_word_index,
+              true_SOS_token_id,
+              true_EOS_token_id,
+              true_EMPTY_token_id,
+              true_reverse_word_index,
+              learning_rate,
+              src_pad_idx,
+              trg_pad_idx,
+              src_vocab_size,
+              trg_vocab_size,
+              prot_t5_model,
+              embed_size,
+              epoch,
+              tensorboard_log_dir,
+              model_save_dir,
+              save_per_epoch,
+              go_embedding_fetcher=None,
+              weights=None,
+              model_config:TransformerModelConfig=None):
+        self.evaluate_models(train_batches,
+                             validation_batches, 
+                             pred_SOS_token_id,
+                             pred_EOS_token_id,
+                             pred_EMPTY_token_id,
+                             pred_reverse_word_index,
+                             true_SOS_token_id,
+                             true_EOS_token_id,
+                             true_EMPTY_token_id,
+                             true_reverse_word_index,
+                             total_go_term_count,
+                             {"lr": [learning_rate]},
+                             self.device,
+                             src_pad_idx,
+                             trg_pad_idx,
+                             src_vocab_size,
+                             trg_vocab_size,
+                             prot_t5_model,
+                             embed_size,
+                             epoch=epoch,
+                             tensorboard_log_dir=tensorboard_log_dir,
+                             model_save_dir=model_save_dir,
+                             save_per_epoch=save_per_epoch,
+                             go_embedding_fetcher=go_embedding_fetcher,
+                             weights=weights,
+                             model_config=model_config)

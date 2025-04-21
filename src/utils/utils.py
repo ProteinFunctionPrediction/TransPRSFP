@@ -1,7 +1,11 @@
-import torch
-import numpy as np
+import io
 import gc
 import torch
+import numpy as np
+import random
+import time
+
+from universal.settings.settings import Settings
 
 class Utils:
     
@@ -10,9 +14,36 @@ class Utils:
         gc.collect()
         torch.cuda.empty_cache()
         gc.collect()
-    
+        
     @staticmethod
-    def get_fp_tp_fn_tn(y_true, y_pred, total_go_term_count, trg_pad_idx = -1, empty_token=-1):
+    def build_go_based_metrics_map_from_reverse_go_term_indices(pred_reverse_go_term_index,
+                                                                true_reverse_go_term_index,
+                                                                exclude_tokens=None):
+        # reverse_go_term_index maps ids to strings
+        
+        if exclude_tokens is None:
+            exclude_tokens = [Settings.TRANSFORMER_SOS_TOKEN, Settings.TRANSFORMER_EOS_TOKEN, Settings.TRANSFORMER_OOV_TOKEN, Settings.TRANSFORMER_OOV_TOKEN.lower()]
+        
+        result = {}
+        
+        for go_term in pred_reverse_go_term_index.values():
+            if go_term in exclude_tokens:
+                continue
+            
+            result[go_term] = {"fp": 0, "tp": 0, "fn": 0, "tn": 0}
+            
+        for go_term in true_reverse_go_term_index.values():
+            if go_term in exclude_tokens:
+                continue
+            
+            result[go_term] = {"fp": 0, "tp": 0, "fn": 0, "tn": 0}
+            
+        result[Settings.TRANSFORMER_OOV_TOKEN.upper()] = {"fp": 0, "tp": 0, "fn": 0, "tn": 0}
+        result[Settings.TRANSFORMER_OOV_TOKEN.lower()] = {"fp": 0, "tp": 0, "fn": 0, "tn": 0}
+        return result
+
+    @staticmethod
+    def get_fp_tp_fn_tn(y_true, y_pred, total_go_term_count, trg_pad_idx = -1, true_empty_token=-1, pred_empty_token=-1):
         fp, tp, fn = 0, 0, 0
                 
         if type(y_true) == torch.Tensor:
@@ -23,18 +54,17 @@ class Utils:
                 
         y_true = list(np.unique(np.asarray(y_true)))
         y_pred = list(np.unique(np.asarray(y_pred)))
-        
-        
+
         if trg_pad_idx in y_true:
             y_true.remove(trg_pad_idx)
         if trg_pad_idx in y_pred:
             y_pred.remove(trg_pad_idx)
             
-        if empty_token in y_true:
-            y_true.remove(empty_token)
-        if empty_token in y_pred:
-            y_pred.remove(empty_token)
-        
+        if true_empty_token in y_true:
+            y_true.remove(true_empty_token)
+        if pred_empty_token in y_pred:
+            y_pred.remove(pred_empty_token)
+
         for token in y_pred:
             if token not in y_true:
                 fp += 1
@@ -50,7 +80,52 @@ class Utils:
         return fp, tp, fn, tn
     
     @staticmethod
-    def get_fp_tp_fn_tn_token_based(y_true, y_pred, total_go_term_count, trg_pad_idx = 0, empty_token=-1):
+    def generate_random_str(length, use_timestamp=False):
+        alph = "abcdefghijklmnopqrstuvwxyz"
+        string_io = io.StringIO()
+        for i in range(length):
+            string_io.write(random.choice(alph))
+        if use_timestamp:
+            return str(int(time.time() * 1000)) + "_" + string_io.getvalue()
+        else:
+            return string_io.getvalue()
+    
+    @staticmethod
+    def update_go_based_metrics_map(y_true, y_pred, go_based_metrics):
+        # reverse_go_term_index maps ids to strings
+        
+        if type(y_true) == torch.Tensor:
+            y_true = list(y_true.cpu().numpy())
+        
+        if type(y_pred) == torch.Tensor:
+            y_pred = list(y_pred.cpu().numpy())
+            
+        try:
+            assert len(y_true) == len(y_pred)
+        except AssertionError as e:
+            print(len(y_true), len(y_pred))
+            assert len(y_true) == len(y_pred) # let the execution terminate
+            
+        for i in range(len(y_true)):
+            true_token = y_true[i]
+            pred_token = y_pred[i]
+
+            for go_term, metrics in go_based_metrics.items():
+                metrics["tn"] += 1
+
+            if true_token == pred_token:                
+                go_based_metrics[true_token.lower()]["tn"] -= 1 # to neutralize the operation above on the correctly predicted token
+                go_based_metrics[true_token.lower()]["tp"] += 1
+            else:
+                go_based_metrics[pred_token.lower()]["tn"] -= 1 # to neutralize the operation above on the predicted token
+                go_based_metrics[true_token.lower()]["tn"] -= 1 # to neutralize the operation above on the true token
+                
+                go_based_metrics[pred_token.lower()]["fp"] += 1
+                go_based_metrics[true_token.lower()]["fn"] += 1
+                
+    
+    @staticmethod
+    def get_fp_tp_fn_tn_token_based(y_true, y_pred, total_go_term_count, trg_pad_idx = 0, true_empty_token=-1, pred_empty_token=-1):
         fp, tp, fn, tn = 0, 0, 0, 0
             
         if type(y_true) == torch.Tensor:
@@ -68,17 +143,17 @@ class Utils:
         for i in range(len(y_true)):
             true_token = y_true[i]
             pred_token = y_pred[i]
-            if true_token == empty_token and pred_token == empty_token:
+            if true_token == true_empty_token and pred_token == pred_empty_token:
                 tn += 1
-            elif true_token == empty_token and pred_token != empty_token:
+            elif true_token == true_empty_token and pred_token != pred_empty_token:
                 fp += 1 # fp for predicting an incorrect token
-            elif true_token != empty_token and pred_token != empty_token:
+            elif true_token != true_empty_token and pred_token != pred_empty_token:
                 if true_token == pred_token:
                     tp += 1
                 else:
                     fn += 1 # fn for failing to predict the correct token
                     fp += 1 # fp for predicting an incorrect token
-            elif true_token != empty_token and pred_token == empty_token:
+            elif true_token != true_empty_token and pred_token == pred_empty_token:
                 fn += 1 # fn for failing to predict the correct token
         
         return fp, tp, fn, tn
@@ -138,15 +213,18 @@ class Utils:
         return equal_count/len(y_true)
 
     @staticmethod
-    def match_ratio_nonempty(y_true, y_pred, empty_token):
+    def match_ratio_nonempty(y_true, y_pred, true_empty_token):
         assert len(y_true) == len(y_pred)
         equal_count, nonempty_count = 0, 0
         for i in range(len(y_true)):
-            if y_true[i] != empty_token and y_true[i] == y_pred[i]:
+            if y_true[i] != true_empty_token and y_true[i] == y_pred[i]:
                 equal_count += 1
-            if y_true[i] != empty_token:
+            if y_true[i] != true_empty_token:
                 nonempty_count += 1
 
+        if nonempty_count == 0:
+            print("WARNING!: nonempty_count is 0")
+            return 0.0
         return equal_count/nonempty_count
     
     @staticmethod
@@ -194,3 +272,18 @@ class Utils:
             result += key + "_" + str(value) + "."
         return result[:-1]
 
+    @staticmethod
+    def convert_idx_list_to_strings(pred, reverse_word_index):
+        if type(pred) == torch.Tensor:
+            pred = list(pred.cpu().numpy())
+        
+        result = []
+        for i in pred:
+            try:
+                assert i in reverse_word_index
+            except AssertionError as e:
+                print(i)
+                print(reverse_word_index)
+                raise e
+            result.append(reverse_word_index[i].upper().strip())
+        return result

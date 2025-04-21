@@ -13,8 +13,10 @@ class ArgumentHandler:
         group.add_argument('-dp', '--dataset', help='path to dataset (must be a pickle-saved binary file)', required=True)
         group.add_argument('-mt', '--model-type', choices=[Settings.TRANSFORMER_MODEL_TYPE, 
                                                            Settings.CLASSIFICATION_HEAD_MODEL_TYPE,
+                                                           Settings.GPT2_MODEL_TYPE,
                                                            Settings.MERGED_MODEL_TYPE],
                            required=True)
+        group.add_argument('-tmt', '--transformer-model-type', choices=[Settings.TRANSFORMER_MODEL_TYPE, Settings.GPT2_MODEL_TYPE], help='required only if the merged model is used')
         group.add_argument('-mp', '--model-path', help='path to the directory where the model is saved')
         group.add_argument('-t5', '--prot-t5-model-path', help='path to the directory where ProtT5 model is stored', required=True)
         group.add_argument('-th', '--threshold', type=float, help='threshold for classification head model.\nThe less the threshold, the more the number of false positives, but the less the number of false negatives.\nThe more the threshold, the less the number of false positives, but the more the number of false negatives.')
@@ -28,18 +30,37 @@ class ArgumentHandler:
         group.add_argument('-tbld', '--tensorboard-log-dir', type=str, help='the folder where the tensorboard logs are to be saved (must be non-existent)')
         group.add_argument('-chmp', '--classification-head-model-path', type=str, help='path to the classification head model (only used in merged model type)')
         group.add_argument('-tmp', '--transformer-model-path', type=str, help='path to the transformer model (only used in merged model type)')
+        group.add_argument('-rn', '--run-name', type=str, help='the name identifying this run', default='test')
+        group.add_argument('-gti', '--go-term-index', type=str, help='the file path to save GO term index (must be non-existent)')
+        group.add_argument('-lgti', '--load-go-term-index', type=str)
+        group.add_argument('-s', '--random-seed', type=int, help='random seed', required=False, default=42)
+        group.add_argument('-ns', '--no-random-seed', action='store_true', help='if specified, no constant will be set as random seed')
+        group.add_argument('-cfp', '--continue-from-checkpoint', type=str, required=False, help='path to a checkpoint of the model to be trained')
+        group.add_argument('-gtmfp', '--go-term-metrics-filepath-prefix', type=str, required=False, help='the prefix of filenames to save GO term-based metrics.\nIf not specified, a random string will be generated. This option can only be used in inference mode', default='')
+        group.add_argument('-cm', '--compute-metrics', action='store_true', help='If it is given, task-specific metrics will be computed and reported. This can be used only in inference mode.\nIf the provided dataset does not properly include the corresponding true labels, the execution will fail and terminate at an early stage')
+        group.add_argument('-stst', '--save-training-set-to', type=str, required=False, help='the path to save the training set. The specified path must be non-existent. This option can only be used in training mode')
+        group.add_argument('-stest', '--save-test-set-to', type=str, required=False, help='the path to save the test set. The specified path must be non-existent. This option can only be used in training mode')
         
         self.args = self.parser.parse_args()
         
         self._validate()
     
     def _validate(self):
+        if self.args.load_go_term_index is not None and not os.path.exists(self.args.load_go_term_index):
+            self._show_help_and_raise_error(f"The specified GO term index file path does not exist!: {self.args.load_go_term_index}")
+        
+        if self.args.go_term_index is not None and os.path.exists(self.args.go_term_index):
+            self._show_help_and_raise_error("The GO term index file path must be non-existent")
+
         if not self.args.inference and not self.args.train:
             self._show_help_and_raise_error("Neither inference mode nor training mode is set!")
         
         if self.args.model_type == Settings.MERGED_MODEL_TYPE:
             if not self.args.inference:
                 self._show_help_and_raise_error("The merged model type can be run only in inference mode, but inference mode is not set!")
+            
+            if self.args.transformer_model_type is None:
+                self._show_help_and_raise_error("The transformer model type has to be specified when the merged model is used!")
             
             if self.args.classification_head_model_path is None:
                 self._show_help_and_raise_error("Classification head model path must be specified when running in merged model mode!")
@@ -84,6 +105,12 @@ class ArgumentHandler:
             
             if (self.args.model_type == Settings.CLASSIFICATION_HEAD_MODEL_TYPE or self.args.model_type == Settings.MERGED_MODEL_TYPE) and not self.args.threshold:
                 self._show_help_and_raise_error("You have to specify the threshold when using the classification head model in inference mode!")
+
+            if self.args.save_training_set_to is not None:
+                self._show_help_and_raise_error("--save-training-set-to parameter cannot be used in inference mode!")
+
+            if self.args.save_test_set_to is not None:
+                self._show_help_and_raise_error("--save-test-set-to parameter cannot be used in inference mode!")
             
         
         if self.args.train:
@@ -126,10 +153,27 @@ class ArgumentHandler:
                 
                 if os.path.exists(self.args.tensorboard_log_dir):
                     self._show_help_and_raise_error("The speficied tensorboard log dir must not exist!")
-                
-            
 
-    
+            if self.args.save_training_set_to is not None:
+                if os.path.exists(self.args.save_training_set_to):
+                    self._show_help_and_raise_error(f"The path specified as --save-training-set-to parameter must not exist!: {self.args.save_training_set_to}")
+                
+                if not os.path.isdir(os.path.split(self.args.save_training_set_to)[0]):
+                    self._show_help_and_raise_error(f"Not a directory: {os.path.split(self.args.save_training_set_to)[0]}")
+
+            if self.args.save_test_set_to is not None:
+                if os.path.exists(self.args.save_test_set_to):
+                    self._show_help_and_raise_error(f"The path specified as --save-test-set-to parameter must not exist!: {self.args.save_test_set_to}")
+                
+                if not os.path.isdir(os.path.split(self.args.save_test_set_to)[0]):
+                    self._show_help_and_raise_error(f"Not a directory: {os.path.split(self.args.save_test_set_to)[0]}")
+            
+            if self.args.go_term_metrics_filepath_prefix != '':
+                self._show_help_and_raise_error("--go-term-metrics-filepath-prefix option cannot be used in training mode!")
+            
+            if self.args.compute_metrics:
+                self._show_help_and_raise_error("--compute-metrics option cannot be used in training mode!")
+
     def _show_help_and_raise_error(self, message: str, error_type=RuntimeError) -> None:
         self.parser.print_help()
         print("\nYou are seeing this message since the validation of given arguments failed due to the following reason:")

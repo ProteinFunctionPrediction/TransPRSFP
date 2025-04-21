@@ -70,7 +70,7 @@ class ClassificationHeadUtils(ModelUtils):
                 classification_predictions.append(predicted_tokens)
                 
                 if caller is not None:
-                    caller.notify(count - 1, " ".join([model.config.reverse_go_term_to_index[_token_idx] for _token_idx in predicted_tokens]))
+                    caller.notify(count - 1, " ".join([model.get_config().reverse_go_term_to_index[_token_idx] for _token_idx in predicted_tokens]))
             
 
         return classification_predictions

@@ -21,19 +21,7 @@ class ModelConfig(Config, ABC):
         self.register_key("type")
         self.register_key("filepath")
         self.register_key("go_term_to_index_filepath")
-        
-    @abstractmethod
-    def build_from_json_file(path):
-        pass
-    
-    @abstractmethod
-    def build_from_config_loader(self, config_loader: ConfigLoader) -> None:
-        pass
-    
-    @abstractmethod
-    def build(self) -> None:
-        pass
-    
+
     def _on_loading_completed(self) -> None:
         if self.go_term_to_index is None:
             with open(os.path.join(self.config_directory, self.go_term_to_index_filepath), "rb") as f:
