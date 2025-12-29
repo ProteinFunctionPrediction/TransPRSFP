@@ -40,6 +40,9 @@ class ArgumentHandler:
         group.add_argument('-cm', '--compute-metrics', action='store_true', help='If it is given, task-specific metrics will be computed and reported. This can be used only in inference mode.\nIf the provided dataset does not properly include the corresponding true labels, the execution will fail and terminate at an early stage')
         group.add_argument('-stst', '--save-training-set-to', type=str, required=False, help='the path to save the training set. The specified path must be non-existent. This option can only be used in training mode')
         group.add_argument('-stest', '--save-test-set-to', type=str, required=False, help='the path to save the test set. The specified path must be non-existent. This option can only be used in training mode')
+        group.add_argument('-dlr2g', '--dataset-like-region2go', type=str, required=False, help='the path to a dataset-like region2go map file', default='')
+        group.add_argument('-slt', '--save-probs-to', type=str, required=False, help='the path to save the probabilities. The specified path must be non-existent. This option is available only in inference mode')
+        group.add_argument('-kt', '--keep-top', type=int, required=False, help='only a predefined number of largest probabilities will be kept. This option defaults to 5', default=5)
         
         self.args = self.parser.parse_args()
         
@@ -173,6 +176,20 @@ class ArgumentHandler:
             
             if self.args.compute_metrics:
                 self._show_help_and_raise_error("--compute-metrics option cannot be used in training mode!")
+            
+            if self.args.save_probs_to is not None:
+                self._show_help_and_raise_error('--save-probs-to option cannot be used in training mode!')
+    
+        if self.args.save_probs_to is not None:
+            if os.path.exists(self.args.save_probs_to):
+                self._show_help_and_raise_error(f'The path specified as --save-probs-to parameter must not exist!: {self.args.save_probs_to}')
+            
+            if not os.path.isdir(os.path.split(self.args.save_probs_to)[0]):
+                self._show_help_and_raise_error(f'No such directory: {os.path.split(self.args.save_probs_to)[0]}')
+            
+            if self.args.keep_top < 1 or self.args.keep_top > 50:
+                self._show_help_and_raise_error(f'The option --keep-top must be in the range [10, 50]! Specified number: {self.args.keep_top}')
+
 
     def _show_help_and_raise_error(self, message: str, error_type=RuntimeError) -> None:
         self.parser.print_help()

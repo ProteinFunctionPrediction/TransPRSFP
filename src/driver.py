@@ -67,6 +67,8 @@ class Driver:
             self.tf_tokenizer_pred_reverse_word_index = self.reverse_loaded_go_term_index
         self.model_go_term_index = None
         self.reverse_model_go_term_index = None
+        
+        self.return_probs = self.args.save_probs_to is not None
 
 
     def load_models(self):
@@ -222,22 +224,33 @@ class Driver:
                     print(average_metrics)
 
             elif self.args.model_type == Settings.GPT2_MODEL_TYPE:
-                average_metrics, predictions = self.gpt2_lmhead_utils.run_prediction(batches=batches,
-                                                                                     encoder=self.prot_t5_model.to(self.args.device),
-                                                                                     model=self.model,
-                                                                                     caller=self,
-                                                                                     pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                                                                     pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                                                                     pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                                                                     pred_reverse_word_index=self.tf_tokenizer_pred_reverse_word_index,
-                                                                                     true_SOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_SOS_TOKEN, None),
-                                                                                     true_EOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EOS_TOKEN, None),
-                                                                                     true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None),
-                                                                                     true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
-                                                                                     compute_go_based_metrics=self.args.compute_metrics,
-                                                                                     save_go_based_metrics=self.args.compute_metrics,
-                                                                                     compute_metrics=self.args.compute_metrics,
-                                                                                     go_based_metrics_filepath=self.go_term_metrics_filepath_prefix + ".pkl")
+                run_prediction_params = {'batches': batches,
+                                         'encoder': self.prot_t5_model.to(self.args.device),
+                                         'model': self.model,
+                                         'caller': self,
+                                         'pred_SOS_token_id': self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                         'pred_EOS_token_id': self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                         'pred_EMPTY_token_id': self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                         'pred_reverse_word_index': self.tf_tokenizer_pred_reverse_word_index,
+                                         'true_SOS_token_id': self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_SOS_TOKEN, None),
+                                         'true_EOS_token_id': self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EOS_TOKEN, None),
+                                         'true_EMPTY_token_id': self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None),
+                                         'true_reverse_word_index': self.tf_tokenizer_fit_on_dataset_reverse_word_index,
+                                         'compute_go_based_metrics': self.args.compute_metrics,
+                                         'save_go_based_metrics': self.args.compute_metrics,
+                                         'compute_metrics': self.args.compute_metrics,
+                                         'go_based_metrics_filepath': self.go_term_metrics_filepath_prefix + ".pkl",
+                                         'go_based_metrics_reg2go_filepath': self.go_term_metrics_filepath_prefix + "_reg2go.pkl",
+                                         'dataset_like_region2go_path': self.args.dataset_like_region2go,
+                                         'return_probs': self.return_probs,
+                                         'keep_top': self.args.keep_top}
+                if self.return_probs:
+                    average_metrics, predictions, probs = self.gpt2_lmhead_utils.run_prediction(**run_prediction_params)
+                    with open(self.args.save_probs_to, "wb") as f:
+                        pickle.dump(probs, f)
+                else:
+                    average_metrics, predictions = self.gpt2_lmhead_utils.run_prediction(**run_prediction_params)
+
                 if self.args.compute_metrics:
                     print(average_metrics)
 
@@ -586,6 +599,9 @@ class Driver:
     def notify(self, index: int, prediction: str) -> None:
         protein_sequence = self.dataset[index][0].replace(" ", "")
         UniversalAccess.output.write(f"{protein_sequence}: {prediction}")
+    
+    def get_protein_sequence_with_spaces(self, index: int) -> None:
+        return self.dataset[index][0]
 
     def get_value_from_config_of_model(self, folder_path:str, key: str) -> any:
         config_filepath = os.path.join(folder_path, Settings.CONFIG_FILENAME)

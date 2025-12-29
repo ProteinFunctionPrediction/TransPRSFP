@@ -14,11 +14,43 @@ class Utils:
         gc.collect()
         torch.cuda.empty_cache()
         gc.collect()
-        
+
+    @staticmethod
+    def compute_total_go_term_count_from_reg2go(dataset_like_region2go):
+        go_terms = set()
+        for prot_sequence, go_map in dataset_like_region2go.items():
+            for region, go_term_set in go_map.items():
+                for go_term in go_term_set:
+                    go_terms.add(go_term)
+        return len(go_terms)
+    
+    @staticmethod
+    def get_unique_go_terms_from_go_map(go_map):
+        go_terms = set()
+        for region, go_term_set in go_map.items():
+            for go_term in go_term_set:
+                go_terms.add(go_term)
+    
+        return list(go_terms)
+    
+    @staticmethod
+    def go_annotations_for_token(token_idx, position_dict):
+        # position_dict: go_map
+        token_order = token_idx + 1
+        result = set()
+        for position, go_term_set in position_dict.items():
+            ll, ul = position
+            if token_order >= ll and token_order <= ul:
+                for go_term in go_term_set:
+                    result.add(go_term)
+    
+        return list(result)
+    
     @staticmethod
     def build_go_based_metrics_map_from_reverse_go_term_indices(pred_reverse_go_term_index,
                                                                 true_reverse_go_term_index,
-                                                                exclude_tokens=None):
+                                                                exclude_tokens=None,
+                                                                dataset_like_region2go=None):
         # reverse_go_term_index maps ids to strings
         
         if exclude_tokens is None:
@@ -37,7 +69,13 @@ class Utils:
                 continue
             
             result[go_term] = {"fp": 0, "tp": 0, "fn": 0, "tn": 0}
-            
+        
+        if dataset_like_region2go is not None:
+            for _, value in dataset_like_region2go.items():
+                for _, go_terms in value.items():
+                    for go_term in go_terms:
+                        result[go_term.lower()] = {"fp": 0, "tp": 0, "fn": 0, "tn": 0}
+        
         result[Settings.TRANSFORMER_OOV_TOKEN.upper()] = {"fp": 0, "tp": 0, "fn": 0, "tn": 0}
         result[Settings.TRANSFORMER_OOV_TOKEN.lower()] = {"fp": 0, "tp": 0, "fn": 0, "tn": 0}
         return result
@@ -122,7 +160,64 @@ class Utils:
                 
                 go_based_metrics[pred_token.lower()]["fp"] += 1
                 go_based_metrics[true_token.lower()]["fn"] += 1
-                
+    
+    @staticmethod
+    def update_go_based_metrics_reg2go_map(go_map, y_pred, go_based_metrics):
+        if type(y_pred) == torch.Tensor:
+            y_pred = list(y_pred.cpu().numpy())
+        
+        for go_term, metrics in go_based_metrics.items():
+            metrics["tn"] += len(y_pred)
+        
+        for i in range(len(y_pred)):
+            pred_token = y_pred[i].lower()
+
+            true_tokens = set([i.lower() for i in Utils.go_annotations_for_token(i, go_map)])
+            
+            if pred_token == "<empty>":
+                for true_token in true_tokens:
+                    go_based_metrics[true_token]["tn"] -= 1
+                    go_based_metrics[true_token]["fn"] += 1
+            else:
+                if pred_token in true_tokens:
+                    go_based_metrics[pred_token]["tn"] -= 1
+                    go_based_metrics[pred_token]["tp"] += 1
+                else:
+                    go_based_metrics[pred_token]["tn"] -= 1
+                    go_based_metrics[pred_token]["fp"] += 1
+
+                for true_token in true_tokens:
+                    if true_token != pred_token:
+                        go_based_metrics[true_token]["tn"] -= 1
+                        go_based_metrics[true_token]["fn"] += 1
+
+    @staticmethod
+    def get_fp_tp_fn_tn_token_based_reg2go_analysis(go_map, y_pred, total_go_term_count, trg_pad_idx = 0, true_empty_token=-1, pred_empty_token=-1):
+        fp, tp, fn, tn = 0, 0, 0, 0
+        
+        if type(y_pred) == torch.Tensor:
+            y_pred = list(y_pred.cpu().numpy())
+            
+        for i in range(len(y_pred)):
+            pred_token = y_pred[i]
+            go_terms = Utils.go_annotations_for_token(i, go_map)
+            
+            if len(go_terms) == 0 and pred_token == pred_empty_token:
+                tn += 1
+            elif len(go_terms) == 0 and pred_token != pred_empty_token:
+                fp += 1
+            elif len(go_terms) > 0 and pred_token != pred_empty_token:
+                if pred_token in go_terms:
+                    tp += 1
+                    fn += len(go_terms) - 1
+                else:
+                    fn += len(go_terms)
+                    fp += 1
+            elif len(go_terms) > 0 and pred_token == pred_empty_token:
+                fn += len(go_terms)
+
+        return fp, tp, fn, tn
+            
     
     @staticmethod
     def get_fp_tp_fn_tn_token_based(y_true, y_pred, total_go_term_count, trg_pad_idx = 0, true_empty_token=-1, pred_empty_token=-1):
