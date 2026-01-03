@@ -102,7 +102,9 @@ class DatasetUtils:
         return np.asarray(X), np.asarray(y)
 
     @staticmethod
-    def count_go_term_datapoints(dataset):
+    def count_go_term_datapoints(dataset, augmented=False):
+        if augmented:
+            return DatasetUtils.count_go_term_datapoints_augmented(dataset)
         result = {}
         for prot_seq, go_terms in dataset:
             s = set(go_terms.split()[1:-1])
@@ -113,7 +115,81 @@ class DatasetUtils:
         return result
 
     @staticmethod
-    def split_train_val(dataset, val_count):
+    def count_go_term_datapoints_augmented(dataset):
+        result = {}
+        for prot_seq, go_term_sequences in dataset:
+            for go_terms in go_term_sequences:
+                s = set(go_terms.split()[1:-1])
+                for go_term in s:
+                    if go_term not in result:
+                        result[go_term] = 0
+                    result[go_term] += 1
+        return result
+    
+    @staticmethod
+    def count_go_term_datapoints_in_single_augmented_sample(go_term_sequences):
+        result = {}
+        for go_terms in go_term_sequences:
+            s = set(go_terms.split()[1:-1])
+            for go_term in s:
+                if go_term not in result:
+                    result[go_term] = 0
+                result[go_term] += 1
+        return result
+
+    @staticmethod
+    def split_augmented_dataset_to_train_val(dataset, val_count):
+        val = []
+        counts = DatasetUtils.count_go_term_datapoints(dataset, augmented=True)
+        remove_proteins = set()
+        count = 0
+        for i in dataset:
+            prot_seq, go_term_sequences = i
+            go_term_counts = DatasetUtils.count_go_term_datapoints_in_single_augmented_sample(go_term_sequences)
+            skip = False
+            for go_term, go_term_count in go_term_counts.items():
+                if counts[go_term] <= go_term_count:
+                    skip = True
+                    break
+            if skip:
+                continue
+
+            for go_term, go_term_count in go_term_counts.items():
+                counts[go_term] -= go_term_count
+            val.append(i)
+            remove_proteins.add(prot_seq)
+            count += 1
+
+            if count == val_count:
+                break
+
+        train = []
+        for i in dataset:
+            prot_seq, go_terms = i
+            if prot_seq not in remove_proteins:
+                train.append(i)
+
+        return np.asarray(train), np.asarray(val)
+    
+    @staticmethod
+    def is_dataset_augmented(dataset):
+        return type(dataset[0][1]) == list
+
+    @staticmethod
+    def unwrap_augmented_dataset(dataset, pick_one=False):
+        result = []
+        for protein_sequence, go_term_sequences in dataset:
+            if pick_one:
+                result.append(np.array([protein_sequence, go_term_sequences[0]]))
+                continue
+            for go_term_sequence in go_term_sequences:
+                result.append(np.array([protein_sequence, go_term_sequence]))
+        return np.array(result, dtype=object)
+
+    @staticmethod
+    def split_train_val(dataset, val_count, augmented=False):
+        if augmented:
+            return DatasetUtils.split_augmented_dataset_to_train_val(dataset, val_count)
         val = []
         counts = DatasetUtils.count_go_term_datapoints(dataset)
         remove_proteins = set()

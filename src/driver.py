@@ -10,6 +10,7 @@ from universal.settings.settings import Settings
 from model.model_navigator import ModelNavigator
 from utils.dataset.classification_head.dataset_converter import DatasetConverter
 from utils.dataset.dataset_utils import DatasetUtils
+from utils.dataset.dataset_manager import DatasetManager
 from utils.dataset.classification_head.protein_dataset import ProteinDataset
 from utils.model.classification_head.classification_head_utils import ClassificationHeadUtils
 from utils.model.transformer.transformer_utils import TransformerUtils
@@ -60,7 +61,7 @@ class Driver:
         self.tf_tokenizer_fit_on_dataset = None
         self.tf_tokenizer_fit_on_dataset_reverse_word_index = None
         
-        self.tf_tokenizer_pred = Tokenizer(oov_token='<OOV>', filters='')
+        self.tf_tokenizer_pred = Tokenizer(oov_token=Settings.TRANSFORMER_OOV_TOKEN, filters='')
         self.tf_tokenizer_pred_reverse_word_index = None
         if self.loaded_go_term_index is not None:
             self.tf_tokenizer_pred.word_index = self.loaded_go_term_index
@@ -113,11 +114,20 @@ class Driver:
     def run(self):
         self.load_models()
 
-        self.dataset = DatasetUtils.load(self.args.dataset)
+        self.dataset_manager = DatasetManager(DatasetUtils.load(self.args.dataset))
+        self.dataset = self.dataset_manager.get_dataset()
+        
+        if self.dataset_manager.is_dataset_augmented():
+            if self.args.inference:
+                raise RuntimeError("The dataset cannot be of augmented format when the script is run in inference mode!")
+            if self.args.model_type not in [Settings.GPT2_MODEL_TYPE, Settings.TRANSFORMER_MODEL_TYPE]:
+                raise RuntimeError("The dataset can be of augmented format only when the model type is either GPT2 or Transformer")
+            if self.args.dataset_like_region2go == '' or self.args.dataset_like_region2go is None or not os.path.exists(self.args.dataset_like_region2go):
+                raise RuntimeError("A valid dataset-like region2go path has to be provided when the supplied dataset is of augmented format")
+            
 
         if self.args.model_type == Settings.MERGED_MODEL_TYPE or self.args.model_type == Settings.GPT2_MODEL_TYPE or self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
-            self.tf_tokenizer_fit_on_dataset = Tokenizer(oov_token='<OOV>', filters='')
-            self.tf_tokenizer_fit_on_dataset.fit_on_texts(self.dataset[:, 1])
+            self.tf_tokenizer_fit_on_dataset = self.dataset_manager.get_tf_tokenizer()
             self.tf_tokenizer_fit_on_dataset_reverse_word_index = Utils.build_reverse_index(self.tf_tokenizer_fit_on_dataset.word_index)
 
         if self.tf_tokenizer_pred_reverse_word_index is None and self.tf_tokenizer_fit_on_dataset is not None:
@@ -342,7 +352,7 @@ class Driver:
                 val_data = ProteinDataset(dataset_converted[n_train:], self.tokenizer, self.max_length)
                 val_loader = DataLoader(val_data, batch_size=self.BATCH_SIZE)
                 
-                go_term_count = DatasetUtils.get_go_term_count(self.dataset)
+                go_term_count = self.dataset_manager.get_go_term_count()
                 model_config = ClassificationHeadModelConfig("./model.pth", go_term_count,
                                                              self.max_length, "./go_term_to_index.pkl",
                                                              dataset_converter.go_term_to_index_map)
@@ -354,16 +364,31 @@ class Driver:
                                                 self.args.save_per_epoch, self.args.model_save_dir)
             
             elif self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
-                n_train = DatasetUtils.get_training_count(self.args.training_dataset_ratio, len(self.dataset))
+                n_train = self.dataset_manager.get_training_count(self.args.training_dataset_ratio)
                 
-                weight_setter = WeightSetter(self.dataset,
+                weight_setter = WeightSetter(self.dataset_manager.get_unwrapped_dataset(),
                                              self.tf_tokenizer_fit_on_dataset,
                                              len(self.tf_tokenizer_fit_on_dataset.word_index) + 1,
                                              Settings.TRANSFORMER_TRG_PAD_IDX)
                 weights = weight_setter.get_weights()
                 
-                train_batches = list(DatasetUtils.generate_batch_iterator(self.dataset[:n_train], self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
-                validation_batches = list(DatasetUtils.generate_batch_iterator(self.dataset[n_train:], self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
+                self.dataset_manager.shuffle()
+                self.dataset = self.dataset_manager.get_dataset()
+                dataset_train_part, dataset_val_part = DatasetUtils.split_train_val(self.dataset,
+                                                                                    self.dataset_manager.get_datapoint_count() - n_train,
+                                                                                    augmented=self.dataset_manager.is_dataset_augmented())
+                
+                dataset_train_part_unwrapped = dataset_train_part
+                dataset_val_part_unwrapped = dataset_val_part
+                
+                if self.dataset_manager.is_dataset_augmented():
+                    dataset_train_part_unwrapped = DatasetUtils.unwrap_augmented_dataset(dataset_train_part)
+                    # TODO when needed, incorporate the use of dataset-like region2go for metric computation
+                    dataset_val_part_unwrapped = DatasetUtils.unwrap_augmented_dataset(dataset_val_part, pick_one=True)
+                
+                
+                train_batches = list(DatasetUtils.generate_batch_iterator(dataset_train_part_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
+                validation_batches = list(DatasetUtils.generate_batch_iterator(dataset_val_part_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
                 
                 model_config = TransformerModelConfig("./model.pth", len(self.tokenizer.get_vocab()),
                                                       len(self.tf_tokenizer_fit_on_dataset.word_index) + 1,
@@ -401,7 +426,7 @@ class Driver:
                                         model_config)
 
             elif self.args.model_type == Settings.GPT2_MODEL_TYPE:
-                n_train = DatasetUtils.get_training_count(self.args.training_dataset_ratio, len(self.dataset))
+                n_train = self.dataset_manager.get_training_count(self.args.training_dataset_ratio)
 
                 if Settings.GPT2_USE_CUSTOM_WEIGHTS:
                     weight_setter = WeightSetter(self.dataset, self.tf_tokenizer_fit_on_dataset, len(self.tf_tokenizer_fit_on_dataset.word_index) + 1, Settings.TRANSFORMER_TRG_PAD_IDX)
@@ -409,10 +434,22 @@ class Driver:
                 else:
                     weights = None
                 
-                np.random.shuffle(self.dataset)
-                train, val = DatasetUtils.split_train_val(self.dataset, len(self.dataset) - n_train)
+                self.dataset_manager.shuffle()
+                self.dataset = self.dataset_manager.get_dataset()
+                
+                train, val = DatasetUtils.split_train_val(self.dataset,
+                                                          self.dataset_manager.get_datapoint_count() - n_train,
+                                                          augmented=self.dataset_manager.is_dataset_augmented())
+
                 self._train_set = train
                 self._validation_set = val
+                
+                self._train_set_unwrapped = train
+                self._validation_set_unwrapped = val
+                
+                if self.dataset_manager.is_dataset_augmented():
+                    self._train_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(train)
+                    self._validation_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(val, pick_one=True)
                 
                 if self.args.save_training_set_to is not None and not os.path.exists(self.args.save_training_set_to):
                     with open(self.args.save_training_set_to, "wb") as training_split_f:
@@ -422,8 +459,8 @@ class Driver:
                     with open(self.args.save_test_set_to, "wb") as validation_split_f:
                         pickle.dump(val, validation_split_f)
                 
-                train_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(train, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
-                validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(val, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
+                train_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._train_set_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
+                validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._validation_set_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
 
                 if self.args.continue_from_checkpoint is not None:
                     assert os.path.exists(self.args.continue_from_checkpoint)
@@ -461,7 +498,8 @@ class Driver:
                         learning_rate=self.args.learning_rate,
                         per_device_train_batch_size=self.BATCH_SIZE,
                         per_device_eval_batch_size=self.BATCH_SIZE,
-                        save_total_limit=1,
+                        # TODO parameterize save_total_limit
+                        save_total_limit=10 + 1,
                         disable_tqdm=True,
                         logging_steps=10,
                         dataloader_num_workers=10,
@@ -469,7 +507,10 @@ class Driver:
                         ddp_find_unused_parameters=False,
                         remove_unused_columns=False,
                         eval_accumulation_steps=10,
-                        no_cuda=True)
+                        no_cuda=True,
+                        load_best_model_at_end=True,
+                        metric_for_best_model="validation_inference_token_based_f1" if not self.dataset_manager.is_dataset_augmented() else "validation_inference_token_based_f1_reg2go",
+                        greater_is_better=True)
                 else:
                     training_args = TrainingArguments(
                         run_name=self.args.run_name,
@@ -481,14 +522,18 @@ class Driver:
                         learning_rate=self.args.learning_rate,
                         per_device_train_batch_size=self.BATCH_SIZE,
                         per_device_eval_batch_size=self.BATCH_SIZE,
-                        save_total_limit=1,
+                        # TODO parameterize save_total_limit
+                        save_total_limit=10 + 1,
                         disable_tqdm=True,
                         logging_steps=10,
                         dataloader_num_workers=10,
                         fp16=False,
                         ddp_find_unused_parameters=False,
                         remove_unused_columns=False,
-                        eval_accumulation_steps=10)
+                        eval_accumulation_steps=10,
+                        load_best_model_at_end=True,
+                        metric_for_best_model="validation_inference_token_based_f1" if not self.dataset_manager.is_dataset_augmented() else "validation_inference_token_based_f1_reg2go",
+                        greater_is_better=True)
 
                 
                 
@@ -553,15 +598,19 @@ class Driver:
 
         np.random.shuffle(self._train_set)
         np.random.shuffle(self._validation_set)
-        train_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._train_set[:250], self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
-        validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._validation_set[:250], self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
+        if self.dataset_manager.is_dataset_augmented():
+            train_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(DatasetUtils.unwrap_augmented_dataset(self._train_set[:250], pick_one=True), self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
+            validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(DatasetUtils.unwrap_augmented_dataset(self._validation_set[:250], pick_one=True), self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
+        else:
+            train_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._train_set[:250], self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
+            validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._validation_set[:250], self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
 
         UniversalAccess.output.write("Running inference on training set...")
 
         training_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=train_batches,
                                                 encoder=self.prot_t5_model.to(self.args.device),
                                                 model=self.model_for_inference,
-                                                caller=None,
+                                                caller=self,
                                                 pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
                                                 pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
                                                 pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
@@ -571,14 +620,14 @@ class Driver:
                                                 true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
                                                 true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
                                                 compute_metrics=True,
-                                                prefix="training_inference_")
-        
+                                                prefix="training_inference_",
+                                                dataset_like_region2go_path=self.args.dataset_like_region2go)
         UniversalAccess.output.write("Running inference on validation set...")
         
         validation_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=validation_batches,
                                         encoder=self.prot_t5_model.to(self.args.device),
                                         model=self.model_for_inference,
-                                        caller=None,
+                                        caller=self,
                                         pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
                                         pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
                                         pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
@@ -588,7 +637,8 @@ class Driver:
                                         true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
                                         true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
                                         compute_metrics=True,
-                                        prefix="validation_inference_")
+                                        prefix="validation_inference_",
+                                        dataset_like_region2go_path=self.args.dataset_like_region2go)
 
         return {'accuracy': accuracy_sum/len(predictions),
                 'token_based_precision': precision_t_sum/len(predictions),
