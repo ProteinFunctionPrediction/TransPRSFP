@@ -1,5 +1,6 @@
 from utils.model.model_utils import ModelUtils
 from utils.dataset.dataset_utils import DatasetUtils
+from universal.access.universal_access import UniversalAccess
 from universal.settings.settings import Settings
 from utils.utils import Utils
 from io import StringIO
@@ -144,7 +145,10 @@ class GPT2LMHeadUtils(ModelUtils):
                     
                     if dataset_like_region2go is not None:
                         total_go_term_count_from_reg2go = Utils.compute_total_go_term_count_from_reg2go(dataset_like_region2go)
-                        protein_sequence_with_spaces = caller.get_protein_sequence_with_spaces(idx)
+                        if "prot_sequence" in dataloader[idx]:
+                            protein_sequence_with_spaces = dataloader[idx]["prot_sequence"]
+                        else:
+                            protein_sequence_with_spaces = caller.get_protein_sequence_with_spaces(idx)
                         if protein_sequence_with_spaces not in dataset_like_region2go:
                             go_map = None
                             total_missing_sample_count += 1
@@ -242,8 +246,12 @@ class GPT2LMHeadUtils(ModelUtils):
                     print(sample_scores)
 
                 if caller is not None:
-                    caller.notify(count - 1, self.post_process_prediction_as_str(self.post_process_prediction(model, prediction, pred_EMPTY_token_id, pred_reverse_word_index)))
-        
+                    prediction_str = self.post_process_prediction_as_str(self.post_process_prediction(model, prediction, pred_EMPTY_token_id, pred_reverse_word_index))
+                    if "prot_sequence" in dataloader[idx]:
+                        protein_sequence = dataloader[idx]["prot_sequence"].replace(" ", "")
+                        UniversalAccess.output.write(f"{protein_sequence}: {prediction_str}")
+                    else:
+                        caller.notify(count - 1, prediction_str)
         average_metrics = {}
         if compute_metrics:
             for key, value in running_metrics.items():

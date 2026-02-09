@@ -80,6 +80,7 @@ class DatasetUtils:
 
             for i in range(len(tokenized_sequences)):
                 ret = {}
+                ret["prot_sequence"] = batch[i][0]
                 ret["prot_input_ids"] = tokenized_sequences[i]
                 ret["prot_attention_mask"] = tokenized_sequences_attention_mask[i]
                 ret["go_input_ids"] = tokenized_go_terms.tolist()[i]
