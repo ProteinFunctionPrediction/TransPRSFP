@@ -43,6 +43,9 @@ class ArgumentHandler:
         group.add_argument('-dlr2g', '--dataset-like-region2go', type=str, required=False, help='the path to a dataset-like region2go map file', default='')
         group.add_argument('-slt', '--save-probs-to', type=str, required=False, help='the path to save the probabilities. The specified path must be non-existent. This option is available only in inference mode')
         group.add_argument('-kt', '--keep-top', type=int, required=False, help='only a predefined number of largest probabilities will be kept. This option defaults to 5', default=5)
+        group.add_argument('-cmp', '--cluster-mapping-path', type=str, required=False, help='path to cluster mapping file that stores mappings\nfrom protein IDs to sets consisting of cluster IDs of the corresponding protein\n(must be a pickle-saved binary file).\nUsed for splitting the validation dataset into two as\n - those where the protein has no any corresponding protein in its cluster in the training set and\n - those where the protein has at least one corresponding protein in its cluster in the training set.\nIf this parameter is specified, --prot-seq-to-prot-id-index-path parameter must also be specified')
+        group.add_argument('-stiip', '--prot-seq-to-prot-id-index-path', type=str, required=False, help='path to the mapping file that stores mappings\nfrom protein sequences (format: U,Z,O, and B amino acids are transformed to X, and there is one space between each of two consecutive amino acids)\nto protein IDs (must be a pickle-saved binary file).\nUsed for splitting the validation dataset into two as\n - those where the protein has no any corresponding protein in its cluster in the training set and\n - those where the protein has at least one corresponding protein in its cluster in the training set.\nIf this parameter is specified, --cluster-mapping-path parameter must also be specified')
+        group.add_argument('-epilp', '--equivalent-prot-id-list-path', type=str, required=False, help='path to a pickle-saved binary file that stores a list of protein id sets, where each set consists of multiple protein IDs describing the same protein. This file is used to provide better coverage when performing cluster-based operations. This parameter can be used only when the parameters --cluster-mapping-path and --prot-seq-to-prot-id-index-path are used.')
         
         self.args = self.parser.parse_args()
         
@@ -190,6 +193,30 @@ class ArgumentHandler:
             if self.args.keep_top < 1 or self.args.keep_top > 50:
                 self._show_help_and_raise_error(f'The option --keep-top must be in the range [10, 50]! Specified number: {self.args.keep_top}')
 
+        if self.args.cluster_mapping_path is not None:
+            if not self.args.train:
+                self._show_help_and_raise_error('The parameter --cluster-mapping-path can only be used in training mode!')
+            if self.args.prot_seq_to_prot_id_index_path is None:
+                self._show_help_and_raise_error(f'When --cluster-mapping-path is specified, --prot-seq-to-prot-id-index-path has to be specified as well!')
+            if not os.path.exists(self.args.cluster_mapping_path):
+                self._show_help_and_raise_error(f'No such file!: {self.args.cluster_mapping_path}')
+        
+        if self.args.prot_seq_to_prot_id_index_path is not None:
+            if not self.args.train:
+                self._show_help_and_raise_error('The parameter --prot-seq-to-prot-id-index-path can only be used in training mode!')
+            if self.args.cluster_mapping_path is None:
+                self._show_help_and_raise_error(f'When --prot-seq-to-prot-id-index-path is specified, --cluster-mapping has to be specified as well!')
+            if not os.path.exists(self.args.prot_seq_to_prot_id_index_path):
+                self._show_help_and_raise_error(f'No such file!: {self.args.prot_seq_to_prot_id_index_path}')
+
+        if self.args.equivalent_prot_id_list_path is not None:
+            if not self.args.train:
+                self._show_help_and_raise_error('The parameter --equivalent-prot-id-list-path can only be used in training mode!')
+            if self.args.cluster_mapping_path is None or self.args.prot_seq_to_prot_id_index_path is None:
+                self._show_help_and_raise_error('The parameter --equivalent-prot-id-list-path can only be used when the parameters --cluster-mapping-path and --prot-seq-to-prot-id-index-path are used!')
+            if not os.path.exists(self.args.equivalent_prot_id_list_path):
+                self._show_help_and_raise_error(f'No such file!: {self.args.equivalent_prot_id_list_path}')
+                
 
     def _show_help_and_raise_error(self, message: str, error_type=RuntimeError) -> None:
         self.parser.print_help()

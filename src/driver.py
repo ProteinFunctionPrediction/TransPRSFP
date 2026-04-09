@@ -113,8 +113,33 @@ class Driver:
 
     def run(self):
         self.load_models()
+        if self.args.cluster_mapping_path is not None and self.args.prot_seq_to_prot_id_index_path is not None:
+            with open(self.args.cluster_mapping_path, "rb") as f:
+                cluster_mapping = pickle.load(f)
+            
+            with open(self.args.prot_seq_to_prot_id_index_path, "rb") as f:
+                prot_seq_to_id_index = pickle.load(f)
 
-        self.dataset_manager = DatasetManager(DatasetUtils.load(self.args.dataset))
+            equivalent_prot_id_list = None
+            equivalent_prot_id_index_map = None
+            if self.args.equivalent_prot_id_list_path is not None:
+                equivalent_prot_id_index_map = {}
+                with open(self.args.equivalent_prot_id_list_path, "rb") as f:
+                    equivalent_prot_id_list = pickle.load(f)
+                
+                equivalent_prot_ids = set()
+                for i, prot_id_set in enumerate(equivalent_prot_id_list):
+                    for x in prot_id_set:
+                        assert x not in equivalent_prot_id_index_map
+                        equivalent_prot_id_index_map[x] = i
+
+            self.dataset_manager = DatasetManager(DatasetUtils.load(self.args.dataset),
+                                                  cluster_mapping,
+                                                  prot_seq_to_id_index,
+                                                  equivalent_prot_id_list,
+                                                  equivalent_prot_id_index_map)
+        else:
+            self.dataset_manager = DatasetManager(DatasetUtils.load(self.args.dataset))
         self.dataset = self.dataset_manager.get_dataset()
         
         if self.dataset_manager.is_dataset_augmented():
@@ -374,9 +399,10 @@ class Driver:
                 
                 self.dataset_manager.shuffle()
                 self.dataset = self.dataset_manager.get_dataset()
-                dataset_train_part, dataset_val_part = DatasetUtils.split_train_val(self.dataset,
-                                                                                    self.dataset_manager.get_datapoint_count() - n_train,
-                                                                                    augmented=self.dataset_manager.is_dataset_augmented())
+                self.dataset_manager.split_train_val(self.dataset_manager.get_datapoint_count() - n_train)
+                
+                dataset_train_part = self.dataset_manager.get_training_set()
+                dataset_val_part = self.dataset_manager.get_validation_set()
                 
                 dataset_train_part_unwrapped = dataset_train_part
                 dataset_val_part_unwrapped = dataset_val_part
@@ -437,9 +463,9 @@ class Driver:
                 self.dataset_manager.shuffle()
                 self.dataset = self.dataset_manager.get_dataset()
                 
-                train, val = DatasetUtils.split_train_val(self.dataset,
-                                                          self.dataset_manager.get_datapoint_count() - n_train,
-                                                          augmented=self.dataset_manager.is_dataset_augmented())
+                self.dataset_manager.split_train_val(self.dataset_manager.get_datapoint_count() - n_train)
+                train = self.dataset_manager.get_training_set()
+                val = self.dataset_manager.get_validation_set()
 
                 self._train_set = train
                 self._validation_set = val
@@ -450,6 +476,25 @@ class Driver:
                 if self.dataset_manager.is_dataset_augmented():
                     self._train_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(train)
                     self._validation_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(val, pick_one=True)
+                
+                
+                self._close_validation_set = None
+                self._distant_validation_set = None
+                
+                self._close_validation_set_unwrapped = None
+                self._distant_validation_set_unwrapped = None
+                
+                if self.dataset_manager.is_distant_validation_set_split_available():
+                    self._close_validation_set = self.dataset_manager.get_close_validation_set()
+                    self._distant_validation_set = self.dataset_manager.get_distant_validation_set()
+                    
+                    self._close_validation_set_unwrapped = self._close_validation_set
+                    self._distant_validation_set_unwrapped = self._distant_validation_set
+                    
+                    if self.dataset_manager.is_dataset_augmented():
+                        self._close_validation_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(self._close_validation_set)
+                        self._distant_validation_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(self._distant_validation_set)
+                    
                 
                 if self.args.save_training_set_to is not None and not os.path.exists(self.args.save_training_set_to):
                     with open(self.args.save_training_set_to, "wb") as training_split_f:
@@ -487,6 +532,12 @@ class Driver:
                     with open(self.args.go_term_index, "wb") as go_term_index_f:
                         pickle.dump(self.tf_tokenizer_fit_on_dataset.word_index, go_term_index_f)
                 
+                metric_for_best_model = "validation_inference_token_based_f1" if not self.dataset_manager.is_dataset_augmented() else "validation_inference_token_based_f1_reg2go"
+                if self.dataset_manager.is_distant_validation_set_split_available():
+                    metric_for_best_model = "distant_" + metric_for_best_model             
+                
+                UniversalAccess.output.write(f"metric_for_best_model={metric_for_best_model}")     
+
                 if self.args.device == 'cpu':
                     training_args = TrainingArguments(
                         run_name=self.args.run_name,
@@ -509,7 +560,7 @@ class Driver:
                         eval_accumulation_steps=10,
                         no_cuda=True,
                         load_best_model_at_end=True,
-                        metric_for_best_model="validation_inference_token_based_f1" if not self.dataset_manager.is_dataset_augmented() else "validation_inference_token_based_f1_reg2go",
+                        metric_for_best_model=metric_for_best_model,
                         greater_is_better=True)
                 else:
                     training_args = TrainingArguments(
@@ -532,10 +583,8 @@ class Driver:
                         remove_unused_columns=False,
                         eval_accumulation_steps=10,
                         load_best_model_at_end=True,
-                        metric_for_best_model="validation_inference_token_based_f1" if not self.dataset_manager.is_dataset_augmented() else "validation_inference_token_based_f1_reg2go",
+                        metric_for_best_model=metric_for_best_model,
                         greater_is_better=True)
-
-                
                 
                 trainer = GPT2LMHeadTrainer(encoder_model=self.prot_t5_model.to(self.args.device),
                                             custom_weights=weights,
@@ -605,46 +654,107 @@ class Driver:
             train_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._train_set[:250], self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
             validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._validation_set[:250], self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
 
+        close_validation_batches = None
+        distant_validation_batches = None
+        if self.dataset_manager.is_distant_validation_set_split_available():
+            np.random.shuffle(self._close_validation_set)
+            np.random.shuffle(self._distant_validation_set)
+            if self.dataset_manager.is_dataset_augmented():
+                close_validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(DatasetUtils.unwrap_augmented_dataset(self._close_validation_set[:250], pick_one=True), self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
+                distant_validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(DatasetUtils.unwrap_augmented_dataset(self._distant_validation_set[:250], pick_one=True), self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
+            else:
+                close_validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._close_validation_set[:250], self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
+                distant_validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._distant_validation_set[:250], self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
+
+
         UniversalAccess.output.write("Running inference on training set...")
-
         training_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=train_batches,
-                                                encoder=self.prot_t5_model.to(self.args.device),
-                                                model=self.model_for_inference,
-                                                caller=self,
-                                                pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                                pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                                pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                                pred_reverse_word_index=self.tf_tokenizer_pred_reverse_word_index,
-                                                true_SOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                                true_EOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                                true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                                true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
-                                                compute_metrics=True,
-                                                prefix="training_inference_",
-                                                dataset_like_region2go_path=self.args.dataset_like_region2go)
-        UniversalAccess.output.write("Running inference on validation set...")
-        
-        validation_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=validation_batches,
-                                        encoder=self.prot_t5_model.to(self.args.device),
-                                        model=self.model_for_inference,
-                                        caller=self,
-                                        pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                        pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                        pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                        pred_reverse_word_index=self.tf_tokenizer_pred_reverse_word_index,
-                                        true_SOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                        true_EOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                        true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                        true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
-                                        compute_metrics=True,
-                                        prefix="validation_inference_",
-                                        dataset_like_region2go_path=self.args.dataset_like_region2go)
+                                                                            encoder=self.prot_t5_model.to(self.args.device),
+                                                                            model=self.model_for_inference,
+                                                                            caller=self,
+                                                                            pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                            pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                            pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                            pred_reverse_word_index=self.tf_tokenizer_pred_reverse_word_index,
+                                                                            true_SOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                            true_EOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                            true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                            true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
+                                                                            compute_metrics=True,
+                                                                            prefix="training_inference_",
+                                                                            dataset_like_region2go_path=self.args.dataset_like_region2go)
 
-        return {'accuracy': accuracy_sum/len(predictions),
-                'token_based_precision': precision_t_sum/len(predictions),
-                'token_based_recall': recall_t_sum/len(predictions),
-                'token_based_f1': f1_t_sum/len(predictions),
-                'token_based_accuracy': accuracy_t_sum/len(predictions), **training_average_metrics, **validation_average_metrics}
+        UniversalAccess.output.write("Running inference on validation set...")
+        validation_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=validation_batches,
+                                                                              encoder=self.prot_t5_model.to(self.args.device),
+                                                                              model=self.model_for_inference,
+                                                                              caller=self,
+                                                                              pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                              pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                              pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                              pred_reverse_word_index=self.tf_tokenizer_pred_reverse_word_index,
+                                                                              true_SOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                              true_EOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                              true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                              true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
+                                                                              compute_metrics=True,
+                                                                              prefix="validation_inference_",
+                                                                              dataset_like_region2go_path=self.args.dataset_like_region2go)
+        
+        close_validation_average_metrics = None
+        if close_validation_batches is not None and len(self._close_validation_set) > 0:
+            UniversalAccess.output.write("Running inference on close validation set...")
+            close_validation_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=close_validation_batches,
+                                                                                  encoder=self.prot_t5_model.to(self.args.device),
+                                                                                  model=self.model_for_inference,
+                                                                                  caller=self,
+                                                                                  pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                                  pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                                  pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                                  pred_reverse_word_index=self.tf_tokenizer_pred_reverse_word_index,
+                                                                                  true_SOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                                  true_EOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                                  true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                                  true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
+                                                                                  compute_metrics=True,
+                                                                                  prefix="close_validation_inference_",
+                                                                                  dataset_like_region2go_path=self.args.dataset_like_region2go)
+
+        distant_validation_average_metrics = None
+        if distant_validation_batches is not None and len(self._distant_validation_set) > 0:
+            UniversalAccess.output.write("Running inference on distant validation set...")
+            distant_validation_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=distant_validation_batches,
+                                                                                  encoder=self.prot_t5_model.to(self.args.device),
+                                                                                  model=self.model_for_inference,
+                                                                                  caller=self,
+                                                                                  pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                                  pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                                  pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                                  pred_reverse_word_index=self.tf_tokenizer_pred_reverse_word_index,
+                                                                                  true_SOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                                  true_EOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                                  true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                                  true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
+                                                                                  compute_metrics=True,
+                                                                                  prefix="distant_validation_inference_",
+                                                                                  dataset_like_region2go_path=self.args.dataset_like_region2go)
+
+
+        result = {'accuracy': accuracy_sum/len(predictions),
+                  'token_based_precision': precision_t_sum/len(predictions),
+                  'token_based_recall': recall_t_sum/len(predictions),
+                  'token_based_f1': f1_t_sum/len(predictions),
+                  'token_based_accuracy': accuracy_t_sum/len(predictions), **training_average_metrics, **validation_average_metrics}
+        
+        if close_validation_average_metrics is not None:
+            for key, val in close_validation_average_metrics.items():
+                result[key] = val
+        
+        if distant_validation_average_metrics is not None:
+            for key, val in distant_validation_average_metrics.items():
+                result[key] = val
+        
+        return result
     
     def notify(self, index: int, prediction: str) -> None:
         protein_sequence = self.dataset[index][0].replace(" ", "")
