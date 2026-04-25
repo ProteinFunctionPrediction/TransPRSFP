@@ -7,6 +7,8 @@ from transformers import T5EncoderModel
 import os
 import pickle
 from utils.utils import Utils
+import torch.nn as nn
+from typing import Union
 
 class ModelConfig(Config, ABC):
     def __init__(self, type:str, filepath:str, go_term_to_index: dict, go_term_to_index_filepath: str) -> None:
@@ -46,5 +48,5 @@ class ModelConfig(Config, ABC):
         self._on_loading_completed()
     
     @abstractmethod
-    def get_model(prot_t5_model: T5EncoderModel, device: str='cpu') -> Model:
+    def get_model(encoder_model: Union[T5EncoderModel, nn.Module], device: str='cpu') -> Model:
         pass

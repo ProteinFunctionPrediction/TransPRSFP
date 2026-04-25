@@ -8,13 +8,14 @@ from model.config.model_config import ModelConfig
 from model.classification_head.config.classification_head_model_config import ClassificationHeadModelConfig
 from model.transformer.config.transformer_model_config import TransformerModelConfig
 from model.gpt2_lmhead.config.gpt2_lmhead_model_config import Gpt2LMHeadModelConfig
-
+import torch.nn as nn
+from typing import Union
 
 class ModelNavigator:
     
     @staticmethod
-    def create(config: ModelConfig, prot_t5_model: T5EncoderModel, device: str='cpu') -> Model:
-        return config.get_model(prot_t5_model, device)
+    def create(config: ModelConfig, encoder_model: Union[T5EncoderModel, nn.Module], device: str='cpu') -> Model:
+        return config.get_model(encoder_model, device)
     
     @staticmethod
     def load_config(folder_path: str) -> None:
@@ -50,6 +51,6 @@ class ModelNavigator:
             raise RuntimeError(f"Model type is not recognized!: {config['type']}")
     
     @staticmethod
-    def load(folder_path: str, prot_t5_model: T5EncoderModel, device: str='cpu') -> None:
+    def load(folder_path: str, encoder_model: Union[T5EncoderModel, nn.Module], device: str='cpu') -> None:
         config = ModelNavigator.load_config(folder_path)
-        return config.get_model(prot_t5_model, device)
+        return config.get_model(encoder_model, device)

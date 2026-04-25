@@ -2,9 +2,9 @@ import torch.nn as nn
 from model.model import Model
 
 class MultiLabelProteinClassifier(nn.Module, Model):
-    def __init__(self, prot_t5_model, num_labels):
+    def __init__(self, encoder_model, num_labels):
         super(MultiLabelProteinClassifier, self).__init__()
-        self.encoder = prot_t5_model
+        self.encoder = encoder_model
         self.classifier = nn.Linear(1024, num_labels)
 
     def forward(self, input_ids, attention_mask=None):

@@ -32,11 +32,21 @@ from config.loader.json.json_config_loader import JSONConfigLoader
 from utils.utils import Utils
 from io import StringIO
 import torch
+import torch.nn as nn
+from model.custom_encoders.fixed_random_encoder import FixedRandomEncoder
+
+from enum import Enum
+from typing import Union
+
+class EncoderType(Enum):
+    PROT_T5 = 0
+    CUSTOM = 1
 
 class Driver:
     def __init__(self, args) -> None:
         self.args = args
-        self.prot_t5_model: T5EncoderModel = None
+        self.encoder_model: Union[T5EncoderModel, nn.Module] = None
+        self.encoder_type: EncoderType = None
         self.tokenizer: T5Tokenizer = None
         self.model: Model = None
         self.dataset: np.array = None
@@ -77,10 +87,22 @@ class Driver:
         self.tokenizer = T5Tokenizer.from_pretrained("Rostlab/prot_t5_xl_uniref50", do_lower_case=False)
         UniversalAccess.output.write("Done!")
 
-        UniversalAccess.output.write("Loading ProtT5 encoder...")
-        self.prot_t5_model = T5EncoderModel.from_pretrained(self.args.prot_t5_model_path)
-        for i in self.prot_t5_model.parameters():
-            i.requires_grad = False
+        if not self.args.use_custom_encoder:
+            UniversalAccess.output.write("Loading ProtT5 encoder...")
+            self.encoder_model = T5EncoderModel.from_pretrained(self.args.prot_t5_model_path)
+            self.encoder_type = EncoderType.PROT_T5
+            for i in self.encoder_model.parameters():
+                i.requires_grad = False
+        else:
+            self.encoder_type = EncoderType.CUSTOM
+            if self.args.custom_embedding_vectors_path is not None:
+                UniversalAccess.output.write("Loading custom fixed random encoder...")
+                self.encoder_model = FixedRandomEncoder(load_vectors_from=self.args.custom_embedding_vectors_path)
+            else:
+                UniversalAccess.output.write("Creating custom fixed random encoder...")
+                self.encoder_model = FixedRandomEncoder()
+                if self.args.save_custom_embedding_vectors_to is not None:
+                    self.encoder_model.save_vectors(self.args.save_custom_embedding_vectors_to)
         UniversalAccess.output.write("Done!")
 
         model_type: str
@@ -91,7 +113,7 @@ class Driver:
 
         if self.args.inference and self.args.model_type != Settings.MERGED_MODEL_TYPE and self.args.model_type != Settings.GPT2_MODEL_TYPE:
             UniversalAccess.output.write(f"Loading {model_type} model...")
-            self.model = ModelNavigator.load(self.args.model_path, self.prot_t5_model, self.args.device)
+            self.model = ModelNavigator.load(self.args.model_path, self.encoder_model, self.args.device)
             self.model_go_term_index = self.model.get_config().go_term_to_index
             self.reverse_model_go_term_index = self.model.get_config().reverse_go_term_to_index
             if self.loaded_go_term_index is None:
@@ -260,7 +282,7 @@ class Driver:
 
             elif self.args.model_type == Settings.GPT2_MODEL_TYPE:
                 run_prediction_params = {'batches': batches,
-                                         'encoder': self.prot_t5_model.to(self.args.device),
+                                         'encoder': self.encoder_model.to(self.args.device),
                                          'model': self.model,
                                          'caller': self,
                                          'pred_SOS_token_id': self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
@@ -292,7 +314,7 @@ class Driver:
             else: # merged model
                 UniversalAccess.output.write(f"Loading {self.args.transformer_model_type} model...")
                 if self.args.transformer_model_type == Settings.TRANSFORMER_MODEL_TYPE:
-                    self.model = ModelNavigator.load(self.args.transformer_model_path, self.prot_t5_model, self.args.device)
+                    self.model = ModelNavigator.load(self.args.transformer_model_path, self.encoder_model, self.args.device)
                     UniversalAccess.output.write("Done!")
                     self.max_length = self.model.get_config().max_length
                     transformer_model_go_term_to_index = self.model.get_config().go_term_to_index
@@ -321,7 +343,7 @@ class Driver:
                     self.max_length = self.args.max_length
 
                     _, transformer_predictions = self.gpt2_lmhead_utils.run_prediction(batches=batches,
-                                                                                       encoder=self.prot_t5_model.to(self.args.device),
+                                                                                       encoder=self.encoder_model.to(self.args.device),
                                                                                        model=self.model,
                                                                                        caller=self,
                                                                                        pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
@@ -338,7 +360,7 @@ class Driver:
                                                                                        compute_metrics=False)
                 Utils.free_gpu_memory()
                 UniversalAccess.output.write(f"Loading classification model...")
-                self.model = ModelNavigator.load(self.args.classification_head_model_path, self.prot_t5_model, self.args.device)
+                self.model = ModelNavigator.load(self.args.classification_head_model_path, self.encoder_model, self.args.device)
                 UniversalAccess.output.write("Done!")
                 self.max_length = self.model.get_config().max_length
                 classification_model_go_term_to_index = self.model.get_config().go_term_to_index
@@ -382,7 +404,7 @@ class Driver:
                                                              self.max_length, "./go_term_to_index.pkl",
                                                              dataset_converter.go_term_to_index_map)
                 model_config.build()
-                self.model = ModelNavigator.create(model_config, self.prot_t5_model, self.args.device)
+                self.model = ModelNavigator.create(model_config, self.encoder_model, self.args.device)
                 
                 classification_head_utils.train(self.args.epoch, self.args.learning_rate, self.model,
                                                 go_term_count, train_loader, val_loader,
@@ -441,7 +463,7 @@ class Driver:
                                         Settings.TRANSFORMER_TRG_PAD_IDX,
                                         model_config.src_vocab_size,
                                         model_config.trg_vocab_size,
-                                        self.prot_t5_model,
+                                        self.encoder_model,
                                         model_config.embed_size,
                                         self.args.epoch,
                                         self.args.tensorboard_log_dir,
@@ -525,7 +547,7 @@ class Driver:
                                                      go_term_to_index_filepath="./go_term_to_index.pkl",
                                                      go_term_to_index=self.tf_tokenizer_fit_on_dataset.word_index)
                     model_config.build()
-                    model = ModelNavigator.create(config=model_config, prot_t5_model=self.prot_t5_model, device=self.args.device)
+                    model = ModelNavigator.create(config=model_config, encoder_model=self.encoder_model, device=self.args.device)
                     self.model_for_inference = model
                 
                 if self.args.go_term_index is not None:
@@ -534,7 +556,7 @@ class Driver:
                 
                 metric_for_best_model = "validation_inference_token_based_f1" if not self.dataset_manager.is_dataset_augmented() else "validation_inference_token_based_f1_reg2go"
                 if self.dataset_manager.is_distant_validation_set_split_available():
-                    metric_for_best_model = "distant_" + metric_for_best_model             
+                    metric_for_best_model = "close_" + metric_for_best_model             
                 
                 UniversalAccess.output.write(f"metric_for_best_model={metric_for_best_model}")     
 
@@ -586,7 +608,7 @@ class Driver:
                         metric_for_best_model=metric_for_best_model,
                         greater_is_better=True)
                 
-                trainer = GPT2LMHeadTrainer(encoder_model=self.prot_t5_model.to(self.args.device),
+                trainer = GPT2LMHeadTrainer(encoder_model=self.encoder_model.to(self.args.device),
                                             custom_weights=weights,
                                             model=model.to(self.args.device),
                                             args=training_args,
@@ -595,7 +617,10 @@ class Driver:
                                             compute_metrics=self.compute_metrics)
                 
                 trainer.args._n_gpu = 1
-                trainer.train()
+                if self.args.continue_from_checkpoint is not None:
+                    trainer.train(resume_from_checkpoint=self.args.continue_from_checkpoint)
+                else:
+                    trainer.train()
     
     def truncate_padding(self, pred, label, pad_idx):
         if len(label) < 1 or label[0] == pad_idx:
@@ -669,7 +694,7 @@ class Driver:
 
         UniversalAccess.output.write("Running inference on training set...")
         training_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=train_batches,
-                                                                            encoder=self.prot_t5_model.to(self.args.device),
+                                                                            encoder=self.encoder_model.to(self.args.device),
                                                                             model=self.model_for_inference,
                                                                             caller=self,
                                                                             pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
@@ -686,7 +711,7 @@ class Driver:
 
         UniversalAccess.output.write("Running inference on validation set...")
         validation_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=validation_batches,
-                                                                              encoder=self.prot_t5_model.to(self.args.device),
+                                                                              encoder=self.encoder_model.to(self.args.device),
                                                                               model=self.model_for_inference,
                                                                               caller=self,
                                                                               pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
@@ -705,7 +730,7 @@ class Driver:
         if close_validation_batches is not None and len(self._close_validation_set) > 0:
             UniversalAccess.output.write("Running inference on close validation set...")
             close_validation_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=close_validation_batches,
-                                                                                  encoder=self.prot_t5_model.to(self.args.device),
+                                                                                  encoder=self.encoder_model.to(self.args.device),
                                                                                   model=self.model_for_inference,
                                                                                   caller=self,
                                                                                   pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
@@ -724,7 +749,7 @@ class Driver:
         if distant_validation_batches is not None and len(self._distant_validation_set) > 0:
             UniversalAccess.output.write("Running inference on distant validation set...")
             distant_validation_average_metrics, _ = self.gpt2_lmhead_utils.run_prediction(batches=distant_validation_batches,
-                                                                                  encoder=self.prot_t5_model.to(self.args.device),
+                                                                                  encoder=self.encoder_model.to(self.args.device),
                                                                                   model=self.model_for_inference,
                                                                                   caller=self,
                                                                                   pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],

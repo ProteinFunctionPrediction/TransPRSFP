@@ -1,10 +1,12 @@
 import torch
+import torch.nn as nn
 import os
 from transformers import T5EncoderModel
 
 from model.config.model_config import ModelConfig
 from model.transformer.model import Transformer
 from universal.settings.settings import Settings
+from typing import Union
 
 
 class TransformerModelConfig(ModelConfig):
@@ -35,13 +37,13 @@ class TransformerModelConfig(ModelConfig):
         self.register_key("num_layers")
         self.register_key("heads")
 
-    def get_model(self, prot_t5_model: T5EncoderModel, device='cpu'):
+    def get_model(self, encoder_model: Union[T5EncoderModel, nn.Module], device='cpu'):
         assert self.loaded == True
         self.model = Transformer(src_vocab_size=self.src_vocab_size,
                                  trg_vocab_size=self.trg_vocab_size,
                                  src_pad_idx=Settings.TRANSFORMER_SRC_PAD_IDX,
                                  trg_pad_idx=Settings.TRANSFORMER_TRG_PAD_IDX,
-                                 prot_t5_model=prot_t5_model,
+                                 encoder_model=encoder_model,
                                  embed_size=self.embed_size,
                                  num_layers=self.num_layers,
                                  heads=self.heads, device=device,

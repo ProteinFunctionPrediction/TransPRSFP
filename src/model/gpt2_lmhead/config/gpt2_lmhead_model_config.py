@@ -2,9 +2,11 @@ from model.config.model_config import ModelConfig
 from model.gpt2_lmhead.model import GPT2LMHead
 from transformers import T5EncoderModel, GPT2Config
 import torch
+import torch.nn as nn
 import os
 from universal.settings.settings import Settings
 from model.model import Model
+from typing import Union
 
 class Gpt2LMHeadModelConfig(ModelConfig):
     def __init__(self, filepath=None, n_embd=None, heads=None, vocab_size=None,
@@ -32,12 +34,12 @@ class Gpt2LMHeadModelConfig(ModelConfig):
         self.register_key("sos_token")
         self.register_key("eos_token")
 
-    def get_model(self, prot_t5_model: T5EncoderModel, device: str='cpu') -> Model:
+    def get_model(self, encoder_model: Union[T5EncoderModel, nn.Module], device: str='cpu') -> Model:
         assert self.loaded == True
         configuration = GPT2Config(add_cross_attention=True, is_decoder=True, n_embd=self.n_embd,
                                 n_head=self.heads, vocab_size=self.vocab_size, n_positions=self.n_positions,
                                 n_layer=self.num_layers, bos_token_id=self.sos_token, eos_token_id=self.eos_token)
-        self.model = GPT2LMHead(prot_t5_model, configuration).to(device)
+        self.model = GPT2LMHead(encoder_model, configuration).to(device)
         self.model.set_config(self)
         if self.load_from_pretrained_model:
             self.model.load_state_dict(torch.load(os.path.join(self.config_directory, self.filepath), map_location=device))

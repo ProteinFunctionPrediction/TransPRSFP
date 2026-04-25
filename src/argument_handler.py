@@ -18,7 +18,7 @@ class ArgumentHandler:
                            required=True)
         group.add_argument('-tmt', '--transformer-model-type', choices=[Settings.TRANSFORMER_MODEL_TYPE, Settings.GPT2_MODEL_TYPE], help='required only if the merged model is used')
         group.add_argument('-mp', '--model-path', help='path to the directory where the model is saved')
-        group.add_argument('-t5', '--prot-t5-model-path', help='path to the directory where ProtT5 model is stored', required=True)
+        group.add_argument('-t5', '--prot-t5-model-path', help='path to the directory where ProtT5 model is stored.\nThis parameter cannot be used if --use-custom-encoder is provided', required=False)
         group.add_argument('-th', '--threshold', type=float, help='threshold for classification head model.\nThe less the threshold, the more the number of false positives, but the less the number of false negatives.\nThe more the threshold, the less the number of false positives, but the more the number of false negatives.')
         group.add_argument('-bs', '--batch-size', type=int, help='batch size')
         group.add_argument('-e', '--epoch', type=int, help='number of epochs for training')
@@ -46,12 +46,32 @@ class ArgumentHandler:
         group.add_argument('-cmp', '--cluster-mapping-path', type=str, required=False, help='path to cluster mapping file that stores mappings\nfrom protein IDs to sets consisting of cluster IDs of the corresponding protein\n(must be a pickle-saved binary file).\nUsed for splitting the validation dataset into two as\n - those where the protein has no any corresponding protein in its cluster in the training set and\n - those where the protein has at least one corresponding protein in its cluster in the training set.\nIf this parameter is specified, --prot-seq-to-prot-id-index-path parameter must also be specified')
         group.add_argument('-stiip', '--prot-seq-to-prot-id-index-path', type=str, required=False, help='path to the mapping file that stores mappings\nfrom protein sequences (format: U,Z,O, and B amino acids are transformed to X, and there is one space between each of two consecutive amino acids)\nto protein IDs (must be a pickle-saved binary file).\nUsed for splitting the validation dataset into two as\n - those where the protein has no any corresponding protein in its cluster in the training set and\n - those where the protein has at least one corresponding protein in its cluster in the training set.\nIf this parameter is specified, --cluster-mapping-path parameter must also be specified')
         group.add_argument('-epilp', '--equivalent-prot-id-list-path', type=str, required=False, help='path to a pickle-saved binary file that stores a list of protein id sets, where each set consists of multiple protein IDs describing the same protein. This file is used to provide better coverage when performing cluster-based operations. This parameter can be used only when the parameters --cluster-mapping-path and --prot-seq-to-prot-id-index-path are used.')
+        group.add_argument('-uce', '--use-custom-encoder', action='store_true', help='If it is given, a custom embedding will be used instead of ProtT5. ')
+        group.add_argument('-cevp', '--custom-embedding-vectors-path', type=str, required=False, help='the path to the custom embedding vectors binary file.\nThis parameter cannot be used without providing --use-custom-encoder')
+        group.add_argument('-scevt', '--save-custom-embedding-vectors-to', type=str, required=False, help='the path to save the randomly generated custom embedding vectors.\nThis parameter cannot be used without providing --use-custom-encoder')
         
         self.args = self.parser.parse_args()
         
         self._validate()
     
     def _validate(self):
+        if self.args.use_custom_encoder:
+            if self.args.prot_t5_model_path is not None:
+                self._show_help_and_raise_error(f"--prot-t5-model-path must not be provided when --use-custom-encoder is provided")
+            if self.args.custom_embedding_vectors_path is not None and self.args.save_custom_embedding_vectors_to is not None:
+                self._show_help_and_raise_error(f"--custom-embedding-vectors-path and --save-custom-embedding-vectors-to must not be proided at the same time")
+
+            if self.args.custom_embedding_vectors_path is not None and not os.path.isfile(self.args.custom_embedding_vectors_path):
+                self._show_help_and_raise_error(f"No such file!: {self.args.custom_embedding_vectors_path}")
+            if self.args.save_custom_embedding_vectors_to is not None and os.path.exists(self.args.save_custom_embedding_vectors_to):
+                self._show_help_and_raise_error(f"File already exists!: {self.args.save_custom_embedding_vectors_to}")
+
+        else:
+            if self.args.prot_t5_model_path is None:
+                self._show_help_and_raise_error(f"--prot-t5-model-path has to be provided when --use-custom-encoder is not provided")
+            if not os.path.isdir(self.args.prot_t5_model_path):
+                self._show_help_and_raise_error(f"No such directory!: {self.args.prot_t5_model_path}")
+
         if self.args.load_go_term_index is not None and not os.path.exists(self.args.load_go_term_index):
             self._show_help_and_raise_error(f"The specified GO term index file path does not exist!: {self.args.load_go_term_index}")
         
@@ -92,11 +112,6 @@ class ArgumentHandler:
         
         if not os.path.isfile(self.args.dataset):
             self._show_help_and_raise_error(f"No such file!:{self.args.dataset}")
-        
-        
-        
-        if not os.path.isdir(self.args.prot_t5_model_path):
-            self._show_help_and_raise_error(f"No such directory!: {self.args.prot_t5_model_path}")
         
         if self.args.max_length < 0:
             self._show_help_and_raise_error(f"Maximum length must not be negative!")

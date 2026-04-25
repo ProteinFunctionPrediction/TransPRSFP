@@ -10,7 +10,7 @@ class Transformer(nn.Module, Model):
         trg_vocab_size,
         src_pad_idx,
         trg_pad_idx,
-        prot_t5_model,
+        encoder_model,
         embed_size=512,
         num_layers=6,
         forward_expansion=4,
@@ -38,7 +38,7 @@ class Transformer(nn.Module, Model):
         self.src_pad_idx = src_pad_idx
         self.trg_pad_idx = trg_pad_idx
         self.device = device
-        self.prot_t5_model = prot_t5_model
+        self.encoder_model = encoder_model
 
     def make_src_mask(self, src):
         src_mask = (src != self.src_pad_idx).unsqueeze(1).unsqueeze(2)
@@ -60,7 +60,7 @@ class Transformer(nn.Module, Model):
         
         first_dim = src_mask.shape[0]
         last_dim = src_mask.shape[-1]
-        enc_src = self.prot_t5_model(input_ids=src,attention_mask=torch.reshape(src_mask, (first_dim, last_dim))).last_hidden_state
+        enc_src = self.encoder_model(input_ids=src,attention_mask=torch.reshape(src_mask, (first_dim, last_dim))).last_hidden_state
         if prediction_mask is not None:
             enc_src = torch.tensor(enc_src.cpu().numpy()[:, prediction_mask, :], device=self.device)
 

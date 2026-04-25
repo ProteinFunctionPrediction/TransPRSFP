@@ -382,3 +382,9 @@ class Utils:
                 raise e
             result.append(reverse_word_index[i].upper().strip())
         return result
+
+    @staticmethod
+    def get_rand_vector(shape, min_val, max_val):
+        assert min_val <= max_val
+        val_range = max_val - min_val
+        return torch.rand(*shape) * val_range + min_val
