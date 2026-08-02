@@ -38,6 +38,8 @@ from model.custom_encoders.fixed_random_encoder import FixedRandomEncoder
 from enum import Enum
 from typing import Union
 
+import json
+
 class EncoderType(Enum):
     PROT_T5 = 0
     CUSTOM = 1
@@ -163,6 +165,9 @@ class Driver:
         else:
             self.dataset_manager = DatasetManager(DatasetUtils.load(self.args.dataset))
         self.dataset = self.dataset_manager.get_dataset()
+        if self.dataset_manager.dummy_label_fix_applied():
+            UniversalAccess.output.write(f"Dummy labels in the dataset have been fixed")
+
         
         if self.dataset_manager.is_dataset_augmented():
             if self.args.inference:
@@ -534,6 +539,7 @@ class Driver:
                     UniversalAccess.output.write(f"Checkpoint: {self.args.continue_from_checkpoint}")
                     gpt2_lmhead_pretrained_config = GPT2Config.from_pretrained(self.args.continue_from_checkpoint)
                     model = GPT2LMHeadModel.from_pretrained(self.args.continue_from_checkpoint, config=gpt2_lmhead_pretrained_config).to(self.args.device)
+                    model.encoder = self.encoder_model
                     self.model_for_inference = model
                 else:
                     model_config = Gpt2LMHeadModelConfig(filepath="./model.pth",
@@ -615,12 +621,44 @@ class Driver:
                                             train_dataset=GPT2Dataset(train_batches),
                                             eval_dataset=GPT2Dataset(validation_batches),
                                             compute_metrics=self.compute_metrics)
+
+                #try:
+                #    print(trainer.optimizer.state_dict())
+                #except Exception as se:
+                #    trainer.create_optimizer()
+                #    print(trainer.optimizer.state_dict())
                 
                 trainer.args._n_gpu = 1
                 if self.args.continue_from_checkpoint is not None:
-                    trainer.train(resume_from_checkpoint=self.args.continue_from_checkpoint)
-                else:
-                    trainer.train()
+                    if trainer.optimizer is None:
+                        trainer.create_optimizer()
+                        print("created trainer optimizer", trainer.optimizer is not None)
+                    
+                    optimizer_state_dict = torch.load(os.path.join(self.args.continue_from_checkpoint, "optimizer.pt"))
+                    current_params = sum(len(g["params"]) for g in trainer.optimizer.param_groups)
+                    saved_params = sum(len(g["params"]) for g in optimizer_state_dict["param_groups"])
+                    print(f"current_params: {current_params}, saved_params: {saved_params}")
+                    assert current_params == saved_params
+                    trainer.optimizer.load_state_dict(optimizer_state_dict)
+                    print("loaded optimizer")
+                    #trainer.create_optimizer()
+
+
+
+                    with open(os.path.join(self.args.continue_from_checkpoint, "trainer_state.json")) as f:
+                        trainer_state_dict = json.loads(f.read())
+                    
+                    max_steps = trainer_state_dict["max_steps"]
+                    
+                    if trainer.lr_scheduler is None:
+                        trainer.create_scheduler(num_training_steps=max_steps)
+                        print("created trainer scheduler", trainer.lr_scheduler is not None)
+
+                    trainer.lr_scheduler.load_state_dict(torch.load(os.path.join(self.args.continue_from_checkpoint, "scheduler.pt")))
+                    print("loaded scheduler")
+                    
+
+                trainer.train()
     
     def truncate_padding(self, pred, label, pad_idx):
         if len(label) < 1 or label[0] == pad_idx:
@@ -671,7 +709,13 @@ class Driver:
             accuracy_t_sum += accuracy_score_t
 
         np.random.shuffle(self._train_set)
+        while not Utils.hotfix_check_dataset(self._train_set[:250]):
+            np.random.shuffle(self._train_set)
+
         np.random.shuffle(self._validation_set)
+        while not Utils.hotfix_check_dataset(self._validation_set[:250]):
+            np.random.shuffle(self._validation_set)
+
         if self.dataset_manager.is_dataset_augmented():
             train_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(DatasetUtils.unwrap_augmented_dataset(self._train_set[:250], pick_one=True), self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
             validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(DatasetUtils.unwrap_augmented_dataset(self._validation_set[:250], pick_one=True), self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
@@ -683,7 +727,13 @@ class Driver:
         distant_validation_batches = None
         if self.dataset_manager.is_distant_validation_set_split_available():
             np.random.shuffle(self._close_validation_set)
+            while not Utils.hotfix_check_dataset(self._close_validation_set[:250]):
+                np.random.shuffle(self._close_validation_set)
+
             np.random.shuffle(self._distant_validation_set)
+            while not Utils.hotfix_check_dataset(self._distant_validation_set[:250]):
+                np.random.shuffle(self._distant_validation_set)
+
             if self.dataset_manager.is_dataset_augmented():
                 close_validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(DatasetUtils.unwrap_augmented_dataset(self._close_validation_set[:250], pick_one=True), self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))
                 distant_validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(DatasetUtils.unwrap_augmented_dataset(self._distant_validation_set[:250], pick_one=True), self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length))

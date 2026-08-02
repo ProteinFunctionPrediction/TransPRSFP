@@ -13,6 +13,7 @@ class DatasetManager:
                  equivalent_prot_id_list=None,
                  equivalent_prot_id_index_map=None):
         self.__dataset = dataset
+        self.__dummy_label_fix_applied: bool = self.__fix_if_labels_dummy()
         self.__cluster_mapping = cluster_mapping
         self.__prot_seq_to_id_index = prot_seq_to_id_index
         self.__equivalent_prot_id_list = equivalent_prot_id_list
@@ -46,6 +47,29 @@ class DatasetManager:
         self.__training_based_cluster_split_stat = None
         self.__validation_based_cluster_split_stat = None
         
+    def dummy_label_fix_applied(self) -> bool:
+        return self.__dummy_label_fix_applied
+
+    def __fix_if_labels_dummy(self) -> bool:
+        all_dummy = True
+        all_normal = True
+        for _, i in self.__dataset:
+            if not all_dummy and not all_normal:
+                break
+            
+            if i == '':
+                all_normal = False
+            else:
+                all_dummy = False
+        
+        assert (all_dummy and not all_normal) or (not all_dummy and all_normal)
+
+        if all_dummy:
+            for idx in range(len(self.__dataset)):
+                self.__dataset[idx][1] = Settings.TRANSFORMER_SOS_TOKEN + ' ' + ' '.join([Settings.TRANSFORMER_EMPTY_TOKEN for _ in range(len(self.__dataset[idx][0].strip().split()))]) + ' ' + Settings.TRANSFORMER_EOS_TOKEN
+        
+        return all_dummy
+
                 
     def __prepare_tf_tokenizer(self):
         tf_tokenizer = Tokenizer(oov_token=Settings.TRANSFORMER_OOV_TOKEN, filters='')

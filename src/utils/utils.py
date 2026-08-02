@@ -388,3 +388,10 @@ class Utils:
         assert min_val <= max_val
         val_range = max_val - min_val
         return torch.rand(*shape) * val_range + min_val
+    
+    @staticmethod
+    def hotfix_check_dataset(dataset):
+        for _, i in dataset:
+            if len(i) == 0:
+                return False
+        return True
