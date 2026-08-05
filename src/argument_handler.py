@@ -59,6 +59,8 @@ class ArgumentHandler:
     
     def _validate(self):
         if self.args.use_trainable_custom_encoder:
+            if self.args.prot_t5_model_path is not None:
+                self._show_help_and_raise_error(f"--prot-t5-model-path must not be provided when --use-trainable-custom-encoder is provided")
             if self.args.use_custom_encoder:
                 self._show_help_and_raise_error(f"--use-custom-encoder and --use-trainable-custom-encoder cannot be used at the same time")
             if self.args.custom_embedding_vectors_path is not None:

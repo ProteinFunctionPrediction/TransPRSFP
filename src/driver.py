@@ -107,12 +107,15 @@ class Driver:
                 self.encoder_type = EncoderType.CUSTOM_TRAINABLE
         else:
             self.encoder_type = EncoderType.CUSTOM
+            assert self.tokenizer.pad_token_id == 0, f"Tokenizer padding index is {self.tokenizer.pad_token_id}, expected 0"
+            assert len(self.tokenizer.get_vocab()) == 128, f"Tokenizer vocab size is {len(self.tokenizer.get_vocab())}, expected 128"
+            assert Settings.TRANSFORMER_EMBED_SIZE == 1024, f"Settings.TRANSFORMER_EMBED_SIZE is {Settings.TRANSFORMER_EMBED_SIZE}, expected 1024"
             if self.args.custom_embedding_vectors_path is not None:
                 UniversalAccess.output.write("Loading custom fixed random encoder...")
-                self.encoder_model = FixedRandomEncoder(load_vectors_from=self.args.custom_embedding_vectors_path)
+                self.encoder_model = FixedRandomEncoder(vocab_size=len(self.tokenizer.get_vocab()), embed_size=Settings.TRANSFORMER_EMBED_SIZE, load_vectors_from=self.args.custom_embedding_vectors_path, padding_idx=self.tokenizer.pad_token_id)
             else:
                 UniversalAccess.output.write("Creating custom fixed random encoder...")
-                self.encoder_model = FixedRandomEncoder()
+                self.encoder_model = FixedRandomEncoder(vocab_size=len(self.tokenizer.get_vocab()), embed_size=Settings.TRANSFORMER_EMBED_SIZE, padding_idx=self.tokenizer.pad_token_id)
                 if self.args.save_custom_embedding_vectors_to is not None:
                     self.encoder_model.save_vectors(self.args.save_custom_embedding_vectors_to)
         UniversalAccess.output.write("Done!")
@@ -138,6 +141,9 @@ class Driver:
             self.model = GPT2LMHeadModel.from_pretrained(self.args.model_path, config=gpt2_lmhead_pretrained_config).to(self.args.device)
             self.model_go_term_index = self.loaded_go_term_index
             self.reverse_model_go_term_index = Utils.build_reverse_index(self.model_go_term_index)
+            if self.encoder_type == EncoderType.CUSTOM_TRAINABLE:
+                state_dict = torch.load(os.path.join(self.args.model_path, "pytorch_model.bin"), map_location="cpu")
+                self.encoder_model.load_state_dict(Utils.from_dict_fetch_only_starting_with(state_dict, "encoder.", remove_prefix=True), strict=True)
             UniversalAccess.output.write("Done!")
         elif self.args.inference and self.args.model_type == Settings.MERGED_MODEL_TYPE and self.args.transformer_model_type == Settings.TRANSFORMER_MODEL_TYPE:
             transformer_model_config = ModelNavigator.load_config(self.args.transformer_model_path)
@@ -553,7 +559,8 @@ class Driver:
                         self.encoder_model.load_state_dict(Utils.from_dict_fetch_only_starting_with(state_dict, "encoder.", remove_prefix=True), strict=True)
                     model = GPT2LMHeadModel.from_pretrained(self.args.continue_from_checkpoint, config=gpt2_lmhead_pretrained_config).to(self.args.device)
                     model.encoder = self.encoder_model
-                    assert model.encoder.embedding.weight.requires_grad
+                    if self.encoder_type == EncoderType.CUSTOM_TRAINABLE:
+                        assert model.encoder.embedding.weight.requires_grad
                     self.model_for_inference = model
                 else:
                     model_config = Gpt2LMHeadModelConfig(filepath="./model.pth",
