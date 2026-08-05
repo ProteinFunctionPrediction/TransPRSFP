@@ -395,3 +395,9 @@ class Utils:
             if len(i) == 0:
                 return False
         return True
+
+    @staticmethod
+    def from_dict_fetch_only_starting_with(d, prefix, remove_prefix=True):
+        if not remove_prefix:
+            return {k: v for k, v in d.items() if k.startswith(prefix)}
+        return {k[len(prefix):]: v for k, v in d.items() if k.startswith(prefix)}

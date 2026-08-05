@@ -2,11 +2,8 @@ import torch
 import torch.nn as nn
 import os
 from utils.utils import Utils
+from model.custom_encoders.output import Output
 
-
-class Output:
-    def __init__(self, last_hidden_state):
-        self.last_hidden_state = last_hidden_state
 
 class FixedRandomEncoder(nn.Module):
     def __init__(self, vocab_size=128, embed_size=1024, load_vectors_from=None):

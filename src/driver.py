@@ -34,6 +34,7 @@ from io import StringIO
 import torch
 import torch.nn as nn
 from model.custom_encoders.fixed_random_encoder import FixedRandomEncoder
+from model.custom_encoders.trainable_embedding_encoder import TrainableEmbeddingEncoder
 
 from enum import Enum
 from typing import Union
@@ -43,6 +44,7 @@ import json
 class EncoderType(Enum):
     PROT_T5 = 0
     CUSTOM = 1
+    CUSTOM_TRAINABLE = 2
 
 class Driver:
     def __init__(self, args) -> None:
@@ -90,11 +92,19 @@ class Driver:
         UniversalAccess.output.write("Done!")
 
         if not self.args.use_custom_encoder:
-            UniversalAccess.output.write("Loading ProtT5 encoder...")
-            self.encoder_model = T5EncoderModel.from_pretrained(self.args.prot_t5_model_path)
-            self.encoder_type = EncoderType.PROT_T5
-            for i in self.encoder_model.parameters():
-                i.requires_grad = False
+            if not self.args.use_trainable_custom_encoder:
+                UniversalAccess.output.write("Loading ProtT5 encoder...")
+                self.encoder_model = T5EncoderModel.from_pretrained(self.args.prot_t5_model_path)
+                self.encoder_type = EncoderType.PROT_T5
+                for i in self.encoder_model.parameters():
+                    i.requires_grad = False
+            else:                    
+                UniversalAccess.output.write("Setting up trainable custom embedding encoder...")
+                assert self.tokenizer.pad_token_id == 0, f"Tokenizer padding index is {self.tokenizer.pad_token_id}, expected 0"
+                assert len(self.tokenizer.get_vocab()) == 128, f"Tokenizer vocab size is {len(self.tokenizer.get_vocab())}, expected 128"
+                assert Settings.TRANSFORMER_EMBED_SIZE == 1024, f"Settings.TRANSFORMER_EMBED_SIZE is {Settings.TRANSFORMER_EMBED_SIZE}, expected 1024"
+                self.encoder_model = TrainableEmbeddingEncoder(vocab_size=len(self.tokenizer.get_vocab()), embed_size=Settings.TRANSFORMER_EMBED_SIZE, padding_idx=self.tokenizer.pad_token_id)
+                self.encoder_type = EncoderType.CUSTOM_TRAINABLE
         else:
             self.encoder_type = EncoderType.CUSTOM
             if self.args.custom_embedding_vectors_path is not None:
@@ -538,8 +548,12 @@ class Driver:
                     assert os.path.exists(self.args.continue_from_checkpoint)
                     UniversalAccess.output.write(f"Checkpoint: {self.args.continue_from_checkpoint}")
                     gpt2_lmhead_pretrained_config = GPT2Config.from_pretrained(self.args.continue_from_checkpoint)
+                    if self.encoder_type == EncoderType.CUSTOM_TRAINABLE:
+                        state_dict = torch.load(os.path.join(self.args.continue_from_checkpoint, "pytorch_model.bin"), map_location="cpu")
+                        self.encoder_model.load_state_dict(Utils.from_dict_fetch_only_starting_with(state_dict, "encoder.", remove_prefix=True), strict=True)
                     model = GPT2LMHeadModel.from_pretrained(self.args.continue_from_checkpoint, config=gpt2_lmhead_pretrained_config).to(self.args.device)
                     model.encoder = self.encoder_model
+                    assert model.encoder.embedding.weight.requires_grad
                     self.model_for_inference = model
                 else:
                     model_config = Gpt2LMHeadModelConfig(filepath="./model.pth",
@@ -615,6 +629,7 @@ class Driver:
                         greater_is_better=True)
                 
                 trainer = GPT2LMHeadTrainer(encoder_model=self.encoder_model.to(self.args.device),
+                                            encoder_model_is_fixed=False if self.args.use_trainable_custom_encoder else True,
                                             custom_weights=weights,
                                             model=model.to(self.args.device),
                                             args=training_args,

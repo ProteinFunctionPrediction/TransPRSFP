@@ -2,14 +2,18 @@ from transformers import Trainer
 import torch
 
 class GPT2LMHeadTrainer(Trainer):
-    def __init__(self, encoder_model=None, custom_weights=None, *args, **kwargs):
+    def __init__(self, encoder_model=None, encoder_model_is_fixed=True, custom_weights=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.encoder_model=encoder_model
+        self.encoder_model = encoder_model
+        self.encoder_model_is_fixed = encoder_model_is_fixed
         self.custom_weights = custom_weights
 
     def compute_loss(self, model, inputs, return_outputs=False):
         input_sequence = inputs["go_input_ids"]
-        with torch.no_grad():
+        if self.encoder_model_is_fixed:
+            with torch.no_grad():
+                last_hidden_state = self.encoder_model(input_ids=inputs["prot_input_ids"], attention_mask=inputs["prot_attention_mask"]).last_hidden_state
+        else:
             last_hidden_state = self.encoder_model(input_ids=inputs["prot_input_ids"], attention_mask=inputs["prot_attention_mask"]).last_hidden_state
         outputs = model(input_ids=input_sequence, encoder_hidden_states=last_hidden_state, labels=input_sequence)
         if self.custom_weights is None:
