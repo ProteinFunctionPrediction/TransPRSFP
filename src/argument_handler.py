@@ -69,7 +69,7 @@ class ArgumentHandler:
                 self._show_help_and_raise_error(f"--save-custom-embedding-vectors-to cannot be used with --use-trainable-custom-encoder")
                 
 
-        if self.args.use_custom_encoder:
+        elif self.args.use_custom_encoder:
             if self.args.prot_t5_model_path is not None:
                 self._show_help_and_raise_error(f"--prot-t5-model-path must not be provided when --use-custom-encoder is provided")
             if self.args.custom_embedding_vectors_path is not None and self.args.save_custom_embedding_vectors_to is not None:

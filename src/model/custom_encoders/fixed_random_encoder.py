@@ -13,8 +13,10 @@ class FixedRandomEncoder(nn.Module):
             self.vocab_size = vocab_size
             self.embed_size = embed_size
             self.vectors = self.generate_random_vectors()
+            self.vectors[padding_idx].zero_()
         else:
             self.vectors = torch.load(load_vectors_from)
+            self.vectors[padding_idx].zero_()
             if vocab_size is None and embed_size is None:
                 self.vocab_size = self.vectors.shape[0]
                 self.embed_size = self.vectors.shape[1]
