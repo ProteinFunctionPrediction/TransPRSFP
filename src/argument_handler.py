@@ -1,5 +1,6 @@
 import argparse
 import os
+import shutil
 from universal.settings.settings import Settings
 
 class ArgumentHandler:
@@ -46,15 +47,26 @@ class ArgumentHandler:
         group.add_argument('-cmp', '--cluster-mapping-path', type=str, required=False, help='path to cluster mapping file that stores mappings\nfrom protein IDs to sets consisting of cluster IDs of the corresponding protein\n(must be a pickle-saved binary file).\nUsed for splitting the validation dataset into two as\n - those where the protein has no any corresponding protein in its cluster in the training set and\n - those where the protein has at least one corresponding protein in its cluster in the training set.\nIf this parameter is specified, --prot-seq-to-prot-id-index-path parameter must also be specified')
         group.add_argument('-stiip', '--prot-seq-to-prot-id-index-path', type=str, required=False, help='path to the mapping file that stores mappings\nfrom protein sequences (format: U,Z,O, and B amino acids are transformed to X, and there is one space between each of two consecutive amino acids)\nto protein IDs (must be a pickle-saved binary file).\nUsed for splitting the validation dataset into two as\n - those where the protein has no any corresponding protein in its cluster in the training set and\n - those where the protein has at least one corresponding protein in its cluster in the training set.\nIf this parameter is specified, --cluster-mapping-path parameter must also be specified')
         group.add_argument('-epilp', '--equivalent-prot-id-list-path', type=str, required=False, help='path to a pickle-saved binary file that stores a list of protein id sets, where each set consists of multiple protein IDs describing the same protein. This file is used to provide better coverage when performing cluster-based operations. This parameter can be used only when the parameters --cluster-mapping-path and --prot-seq-to-prot-id-index-path are used.')
-        group.add_argument('-uce', '--use-custom-encoder', action='store_true', help='If it is given, a custom embedding will be used instead of ProtT5. ')
+        group.add_argument('-uce', '--use-custom-encoder', action='store_true', help='If it is given, a custom embedding will be used instead of ProtT5. This custom embedding consists of randomly generated, fixed vectors')
         group.add_argument('-cevp', '--custom-embedding-vectors-path', type=str, required=False, help='the path to the custom embedding vectors binary file.\nThis parameter cannot be used without providing --use-custom-encoder')
         group.add_argument('-scevt', '--save-custom-embedding-vectors-to', type=str, required=False, help='the path to save the randomly generated custom embedding vectors.\nThis parameter cannot be used without providing --use-custom-encoder')
+        group.add_argument('-utce', '--use-trainable-custom-encoder', action='store_true', help='If it is given, a trainable custom embedding will be used instead of ProtT5. This embedding is trained throughout the training process along with the rest of the model.')
+        group.add_argument('--overwrite', help='Overwrites the existing files instead of failing', action='store_true', default=False, required=False)
         
         self.args = self.parser.parse_args()
         
         self._validate()
     
     def _validate(self):
+        if self.args.use_trainable_custom_encoder:
+            if self.args.use_custom_encoder:
+                self._show_help_and_raise_error(f"--use-custom-encoder and --use-trainable-custom-encoder cannot be used at the same time")
+            if self.args.custom_embedding_vectors_path is not None:
+                self._show_help_and_raise_error(f"--custom-embedding-vectors-path cannot be used with --use-trainable-custom-encoder")
+            if self.args.save_custom_embedding_vectors_to is not None:
+                self._show_help_and_raise_error(f"--save-custom-embedding-vectors-to cannot be used with --use-trainable-custom-encoder")
+                
+
         if self.args.use_custom_encoder:
             if self.args.prot_t5_model_path is not None:
                 self._show_help_and_raise_error(f"--prot-t5-model-path must not be provided when --use-custom-encoder is provided")
@@ -76,7 +88,11 @@ class ArgumentHandler:
             self._show_help_and_raise_error(f"The specified GO term index file path does not exist!: {self.args.load_go_term_index}")
         
         if self.args.go_term_index is not None and os.path.exists(self.args.go_term_index):
-            self._show_help_and_raise_error("The GO term index file path must be non-existent")
+            if not self.args.overwrite:
+                self._show_help_and_raise_error("The GO term index file path must be non-existent")
+            else:
+                input(f"The file {self.args.go_term_index} will be removed when you continue > ")
+                os.remove(self.args.go_term_index)
 
         if not self.args.inference and not self.args.train:
             self._show_help_and_raise_error("Neither inference mode nor training mode is set!")
@@ -153,7 +169,11 @@ class ArgumentHandler:
             if self.args.model_save_dir is None:
                 self._show_help_and_raise_error("You have to specify the model save dir in training mode!")
             elif os.path.exists(self.args.model_save_dir):
-                self._show_help_and_raise_error("The model save dir must not exist!")
+                if not self.args.overwrite:
+                    self._show_help_and_raise_error("The model save dir must not exist!")
+                else:
+                    input(f"The folder {self.args.model_save_dir} will be removed when you continue > ")
+                    shutil.rmtree(self.args.model_save_dir)
                 
             if self.args.save_per_epoch < 0:
                 self.args.save_per_epoch = 0
@@ -173,18 +193,32 @@ class ArgumentHandler:
                     self._show_help_and_raise_error("You have to specify the tensorboard log dir while running transformer model in training mode!")
                 
                 if os.path.exists(self.args.tensorboard_log_dir):
-                    self._show_help_and_raise_error("The speficied tensorboard log dir must not exist!")
+                    if not self.args.overwrite:
+                        self._show_help_and_raise_error("The speficied tensorboard log dir must not exist!")
+                    else:
+                        input(f"The folder {self.args.tensorboard_log_dir} will be removed when you continue > ")
+                        shutil.rmtree(self.args.tensorboard_log_dir)
 
             if self.args.save_training_set_to is not None:
-                if os.path.exists(self.args.save_training_set_to):
-                    self._show_help_and_raise_error(f"The path specified as --save-training-set-to parameter must not exist!: {self.args.save_training_set_to}")
+                if not self.args.overwrite:
+                    if os.path.exists(self.args.save_training_set_to):
+                        self._show_help_and_raise_error(f"The path specified as --save-training-set-to parameter must not exist!: {self.args.save_training_set_to}")
+                else:
+                    if os.path.exists(self.args.save_training_set_to):
+                        input(f"The file {self.args.save_training_set_to} will be removed when you continue > ")
+                        os.remove(self.args.save_training_set_to)
                 
                 if not os.path.isdir(os.path.split(self.args.save_training_set_to)[0]):
                     self._show_help_and_raise_error(f"Not a directory: {os.path.split(self.args.save_training_set_to)[0]}")
 
             if self.args.save_test_set_to is not None:
-                if os.path.exists(self.args.save_test_set_to):
-                    self._show_help_and_raise_error(f"The path specified as --save-test-set-to parameter must not exist!: {self.args.save_test_set_to}")
+                if not self.args.overwrite:
+                    if os.path.exists(self.args.save_test_set_to):
+                        self._show_help_and_raise_error(f"The path specified as --save-test-set-to parameter must not exist!: {self.args.save_test_set_to}")
+                else:
+                    if os.path.exists(self.args.save_test_set_to):
+                        input(f"The file {self.args.save_test_set_to} will be removed when you continue > ")
+                        os.remove(self.args.save_test_set_to)
                 
                 if not os.path.isdir(os.path.split(self.args.save_test_set_to)[0]):
                     self._show_help_and_raise_error(f"Not a directory: {os.path.split(self.args.save_test_set_to)[0]}")
@@ -199,8 +233,13 @@ class ArgumentHandler:
                 self._show_help_and_raise_error('--save-probs-to option cannot be used in training mode!')
     
         if self.args.save_probs_to is not None:
-            if os.path.exists(self.args.save_probs_to):
-                self._show_help_and_raise_error(f'The path specified as --save-probs-to parameter must not exist!: {self.args.save_probs_to}')
+            if not self.args.overwrite:
+                if os.path.exists(self.args.save_probs_to):
+                    self._show_help_and_raise_error(f'The path specified as --save-probs-to parameter must not exist!: {self.args.save_probs_to}')
+            else:
+                if os.path.exists(self.args.save_probs_to):
+                    input(f"The file {self.args.save_probs_to} will be removed when you continue > ")
+                    os.remove(self.args.save_probs_to)
             
             if not os.path.isdir(os.path.split(self.args.save_probs_to)[0]):
                 self._show_help_and_raise_error(f'No such directory: {os.path.split(self.args.save_probs_to)[0]}')
