@@ -82,7 +82,7 @@ class ArgumentHandler:
 
         else:
             if self.args.prot_t5_model_path is None:
-                self._show_help_and_raise_error(f"--prot-t5-model-path has to be provided when --use-custom-encoder is not provided")
+                self._show_help_and_raise_error(f"--prot-t5-model-path has to be provided when no custom encoder is provided")
             if not os.path.isdir(self.args.prot_t5_model_path):
                 self._show_help_and_raise_error(f"No such directory!: {self.args.prot_t5_model_path}")
 
