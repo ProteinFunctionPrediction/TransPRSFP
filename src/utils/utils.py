@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import random
 import time
+import hashlib
 
 from universal.settings.settings import Settings
 
@@ -401,3 +402,7 @@ class Utils:
         if not remove_prefix:
             return {k: v for k, v in d.items() if k.startswith(prefix)}
         return {k[len(prefix):]: v for k, v in d.items() if k.startswith(prefix)}
+
+    @staticmethod
+    def hash_prot_seq(prot_sequence):
+        return hashlib.sha256(prot_sequence.encode()).hexdigest()

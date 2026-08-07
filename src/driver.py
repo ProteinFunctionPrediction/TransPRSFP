@@ -40,11 +40,15 @@ from enum import Enum
 from typing import Union
 
 import json
+from zarr.storage import NestedDirectoryStore
+import zarr
+from transformers import default_data_collator
 
 class EncoderType(Enum):
     PROT_T5 = 0
     CUSTOM = 1
     CUSTOM_TRAINABLE = 2
+    NO_ENCODER = 3
 
 class Driver:
     def __init__(self, args) -> None:
@@ -85,6 +89,15 @@ class Driver:
         
         self.return_probs = self.args.save_probs_to is not None
 
+    def collate_fn(self, d):
+        prot_seqs = [i["prot_sequence"] for i in d]
+
+        seqs_excluded = [{k: v for k, v in i.items() if k != "prot_sequence"} for i in d]
+
+        batch = default_data_collator(seqs_excluded)
+        batch["prot_sequence"] = prot_seqs
+        return batch
+
 
     def load_models(self):
         UniversalAccess.output.write("Loading ProtT5 tokenizer...")
@@ -93,11 +106,24 @@ class Driver:
 
         if not self.args.use_custom_encoder:
             if not self.args.use_trainable_custom_encoder:
-                UniversalAccess.output.write("Loading ProtT5 encoder...")
-                self.encoder_model = T5EncoderModel.from_pretrained(self.args.prot_t5_model_path)
-                self.encoder_type = EncoderType.PROT_T5
-                for i in self.encoder_model.parameters():
-                    i.requires_grad = False
+                if not self.args.embedding_store:
+                    UniversalAccess.output.write("Loading ProtT5 encoder...")
+                    self.encoder_model = T5EncoderModel.from_pretrained(self.args.prot_t5_model_path)
+                    self.encoder_type = EncoderType.PROT_T5
+                    for i in self.encoder_model.parameters():
+                        i.requires_grad = False
+                else:
+                    self.encoder_model = None
+                    self.encoder_type = EncoderType.NO_ENCODER
+                    UniversalAccess.output.write("Loading pre-computed embedding store...")
+                    embedding_store = NestedDirectoryStore(self.args.embedding_store)
+                    embedding_root = zarr.open_group(store=embedding_store, mode="r")
+                    self.embeddings=embedding_root['embeddings']
+                    assert self.embeddings.shape[-1] == 1024
+                    assert len(self.embeddings.shape) == 2
+                    with open(self.args.embedding_offset_lookup_table, "rb") as f:
+                        self.embedding_offset_lookup_table = pickle.load(f)
+
             else:                    
                 UniversalAccess.output.write("Setting up trainable custom embedding encoder...")
                 assert self.tokenizer.pad_token_id == 0, f"Tokenizer padding index is {self.tokenizer.pad_token_id}, expected 0"
@@ -597,7 +623,7 @@ class Driver:
                         num_train_epochs=self.args.epoch,
                         learning_rate=self.args.learning_rate,
                         per_device_train_batch_size=self.BATCH_SIZE,
-                        per_device_eval_batch_size=self.BATCH_SIZE,
+                        per_device_eval_batch_size=self.args.eval_batch_size if self.args.eval_batch_size is not None else self.BATCH_SIZE,
                         # TODO parameterize save_total_limit
                         save_total_limit=10 + 1,
                         disable_tqdm=True,
@@ -621,7 +647,7 @@ class Driver:
                         num_train_epochs=self.args.epoch,
                         learning_rate=self.args.learning_rate,
                         per_device_train_batch_size=self.BATCH_SIZE,
-                        per_device_eval_batch_size=self.BATCH_SIZE,
+                        per_device_eval_batch_size=self.args.eval_batch_size if self.args.eval_batch_size is not None else self.BATCH_SIZE,
                         # TODO parameterize save_total_limit
                         save_total_limit=10 + 1,
                         disable_tqdm=True,
@@ -635,15 +661,19 @@ class Driver:
                         metric_for_best_model=metric_for_best_model,
                         greater_is_better=True)
                 
-                trainer = GPT2LMHeadTrainer(encoder_model=self.encoder_model.to(self.args.device),
+                trainer = GPT2LMHeadTrainer(encoder_model=self.encoder_model.to(self.args.device) if self.encoder_model else self.encoder_model,
                                             encoder_model_is_fixed=False if self.args.use_trainable_custom_encoder else True,
                                             custom_weights=weights,
+                                            embeddings=None if not self.args.embedding_store else self.embeddings,
+                                            embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table,
+                                            device_from_args=self.args.device,
+                                            t5_tokenizer=self.tokenizer,
                                             model=model.to(self.args.device),
                                             args=training_args,
                                             train_dataset=GPT2Dataset(train_batches),
                                             eval_dataset=GPT2Dataset(validation_batches),
-                                            compute_metrics=self.compute_metrics)
-
+                                            compute_metrics=self.compute_metrics,
+                                            data_collator=self.collate_fn)
                 #try:
                 #    print(trainer.optimizer.state_dict())
                 #except Exception as se:

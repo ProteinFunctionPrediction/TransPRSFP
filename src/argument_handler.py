@@ -51,16 +51,36 @@ class ArgumentHandler:
         group.add_argument('-cevp', '--custom-embedding-vectors-path', type=str, required=False, help='the path to the custom embedding vectors binary file.\nThis parameter cannot be used without providing --use-custom-encoder')
         group.add_argument('-scevt', '--save-custom-embedding-vectors-to', type=str, required=False, help='the path to save the randomly generated custom embedding vectors.\nThis parameter cannot be used without providing --use-custom-encoder')
         group.add_argument('-utce', '--use-trainable-custom-encoder', action='store_true', help='If it is given, a trainable custom embedding will be used instead of ProtT5. This embedding is trained throughout the training process along with the rest of the model.')
-        group.add_argument('--overwrite', help='Overwrites the existing files instead of failing', action='store_true', default=False, required=False)
-        
+        group.add_argument('-ow', '--overwrite', help='Overwrites the existing files instead of failing', action='store_true', default=False, required=False)
+        group.add_argument('-ebs', '--eval-batch-size', help='Batch size to be used in evaluation. If not specified, the same number as the batch size is to be used by default', type=int, required=False)
+        group.add_argument('-embs', '--embedding-store', help='Path to a pre-computed embedding store. This speeds up training by bypassing the need for an encoder', type=str, required=False)
+        group.add_argument('-embolt', '--embedding-offset-lookup-table', help='Path to a pickle-saved binary file that contains sha256-offset mappings for the embedding store', type=str, required=False)
         self.args = self.parser.parse_args()
         
         self._validate()
     
     def _validate(self):
+        if self.args.embedding_store is not None and self.args.prot_t5_model_path is not None:
+            self._show_help_and_raise_error("--embedding-store and --prot-t5-model-path arguments cannot be used at the same time")
+    
+        if self.args.embedding_offset_lookup_table is not None and self.args.embedding_store is None:
+            self._show_help_and_raise_error('--embedding-offset-lookup-table can be used only when --embedding-store is also used')
+
+        if self.args.embedding_store is not None:
+            if self.args.embedding_offset_lookup_table is None:
+                self._show_help_and_raise_error('--embedding-offset-lookup-table has to be specified when --embedding-store is used')
+
+            if not os.path.isfile(self.args.embedding_offset_lookup_table):
+                self._show_help_and_raise_error(f'No such file: {self.args.embedding_offset_lookup_table}')
+            
+            if not os.path.isdir(self.args.embedding_store):
+                self._show_help_and_raise_error(f'No such directory: {self.args.embedding_store}')
+
         if self.args.use_trainable_custom_encoder:
             if self.args.prot_t5_model_path is not None:
                 self._show_help_and_raise_error(f"--prot-t5-model-path must not be provided when --use-trainable-custom-encoder is provided")
+            if self.args.embedding_store is not None:
+                self._show_help_and_raise_error(f"--embedding-store must not be provided when --use-trainable-custom-encoder is provided")
             if self.args.use_custom_encoder:
                 self._show_help_and_raise_error(f"--use-custom-encoder and --use-trainable-custom-encoder cannot be used at the same time")
             if self.args.custom_embedding_vectors_path is not None:
@@ -72,18 +92,19 @@ class ArgumentHandler:
         elif self.args.use_custom_encoder:
             if self.args.prot_t5_model_path is not None:
                 self._show_help_and_raise_error(f"--prot-t5-model-path must not be provided when --use-custom-encoder is provided")
+            if self.args.embedding_store is not None:
+                self._show_help_and_raise_error(f"--embedding-store must not be provided when --use-custom-encoder is provided")
             if self.args.custom_embedding_vectors_path is not None and self.args.save_custom_embedding_vectors_to is not None:
                 self._show_help_and_raise_error(f"--custom-embedding-vectors-path and --save-custom-embedding-vectors-to must not be proided at the same time")
-
             if self.args.custom_embedding_vectors_path is not None and not os.path.isfile(self.args.custom_embedding_vectors_path):
                 self._show_help_and_raise_error(f"No such file!: {self.args.custom_embedding_vectors_path}")
             if self.args.save_custom_embedding_vectors_to is not None and os.path.exists(self.args.save_custom_embedding_vectors_to):
                 self._show_help_and_raise_error(f"File already exists!: {self.args.save_custom_embedding_vectors_to}")
 
         else:
-            if self.args.prot_t5_model_path is None:
-                self._show_help_and_raise_error(f"--prot-t5-model-path has to be provided when no custom encoder is provided")
-            if not os.path.isdir(self.args.prot_t5_model_path):
+            if not self.args.embedding_store and self.args.prot_t5_model_path is None:
+                self._show_help_and_raise_error(f"Either --embedding-store or --prot-t5-model-path has to be provided when no custom encoder is provided")
+            if not self.args.embedding_store and not os.path.isdir(self.args.prot_t5_model_path):
                 self._show_help_and_raise_error(f"No such directory!: {self.args.prot_t5_model_path}")
 
         if self.args.load_go_term_index is not None and not os.path.exists(self.args.load_go_term_index):
