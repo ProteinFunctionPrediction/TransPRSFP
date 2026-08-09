@@ -35,7 +35,9 @@ class GPT2LMHeadUtils(ModelUtils):
                        compute_metrics=False,
                        dataset_like_region2go_path="",
                        return_probs=False,
-                       keep_top=10):
+                       keep_top=10,
+                       embeddings=None,
+                       embedding_offset_lookup_table=None):
         
         if dataset_like_region2go_path != "" and os.path.isfile(dataset_like_region2go_path):
             with open(dataset_like_region2go_path, "rb") as f:
@@ -115,6 +117,11 @@ class GPT2LMHeadUtils(ModelUtils):
                                   'max_length': (sample_X_attention_mask == 1).sum().detach().cpu().numpy() - 1,
                                   'return_probs': return_probs,
                                   'keep_top': keep_top}
+
+                if embeddings is not None and embedding_offset_lookup_table is not None:
+                    predict_params['embeddings'] = embeddings
+                    predict_params['embedding_offset'] = dataloader[idx]["embedding_offset"]
+                    predict_params['embedding_length'] = dataloader[idx]["embedding_length"]
 
                 if return_probs:
                     prediction, sample_probs = self.predict(**predict_params)
@@ -307,10 +314,22 @@ class GPT2LMHeadUtils(ModelUtils):
                 EOS_token,
                 EMPTY_token,
                 return_probs=False,
-                keep_top=10):
+                keep_top=10,
+                embeddings=None,
+                embedding_offset=None,
+                embedding_length=None):
         model.eval()
-        with torch.no_grad():
-            last_hidden_state = encoder(input_ids=input_sequence, attention_mask=input_attention_mask).last_hidden_state
+        if encoder is not None:
+            with torch.no_grad():
+                last_hidden_state = encoder(input_ids=input_sequence, attention_mask=input_attention_mask).last_hidden_state
+        else:
+            att_len = (input_attention_mask == 1).sum()
+            last_hidden_state = np.zeros((1, att_len, 1024), dtype=np.float32)
+            offset=embedding_offset
+            length=embedding_length
+            length = min(length, att_len)
+            last_hidden_state[0, :length, :] = embeddings[offset : offset + length]
+            last_hidden_state = torch.from_numpy(last_hidden_state).to(self.device)
 
         y_input = torch.tensor([SOS_token], dtype=torch.long, device=self.device)
         

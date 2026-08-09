@@ -1,5 +1,6 @@
 from universal.settings.settings import Settings
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+from utils.utils import Utils
 
 class DatasetUtils:
     @staticmethod
@@ -48,7 +49,7 @@ class DatasetUtils:
             yield ret
     
     @staticmethod
-    def generate_torch_dataset_compatible_dataset_iterator(dataset, source_tokenizer, target_tokenizer, batch_size, maxlen):
+    def generate_torch_dataset_compatible_dataset_iterator(dataset, source_tokenizer, target_tokenizer, batch_size, maxlen, embedding_offset_lookup_table=None):
         idx = 0
         while idx < len(dataset):
             batch = dataset[idx:idx+batch_size]
@@ -80,10 +81,18 @@ class DatasetUtils:
 
             for i in range(len(tokenized_sequences)):
                 ret = {}
-                ret["prot_sequence"] = batch[i][0]
+                prot_sequence = batch[i][0]
+                ret["prot_sequence"] = prot_sequence
                 ret["prot_input_ids"] = tokenized_sequences[i]
                 ret["prot_attention_mask"] = tokenized_sequences_attention_mask[i]
                 ret["go_input_ids"] = tokenized_go_terms.tolist()[i]
+                if embedding_offset_lookup_table is not None:
+                    prot_sequence_hash = Utils.hash_prot_seq(prot_sequence)
+                    offset, length = embedding_offset_lookup_table[prot_sequence_hash]
+                    ret["embedding_offset"] = offset
+                    # +1: EOS
+                    ret["embedding_length"] = length + 1
+
                 yield ret
 
             #for i in range(batch.shape[0]):
