@@ -15,6 +15,7 @@ class ArgumentHandler:
         group.add_argument('-mt', '--model-type', choices=[Settings.TRANSFORMER_MODEL_TYPE, 
                                                            Settings.CLASSIFICATION_HEAD_MODEL_TYPE,
                                                            Settings.GPT2_MODEL_TYPE,
+                                                           Settings.MLP_RESIDUE_CLASSIFIER_MODEL_TYPE,
                                                            Settings.MERGED_MODEL_TYPE],
                            required=True)
         group.add_argument('-tmt', '--transformer-model-type', choices=[Settings.TRANSFORMER_MODEL_TYPE, Settings.GPT2_MODEL_TYPE], help='required only if the merged model is used')

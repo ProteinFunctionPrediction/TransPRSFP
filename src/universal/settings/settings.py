@@ -4,6 +4,7 @@ class Settings:
     TRANSFORMER_MODEL_TYPE = "transformer"
     CLASSIFICATION_HEAD_MODEL_TYPE = "classification_head"
     GPT2_MODEL_TYPE = "gpt2"
+    MLP_RESIDUE_CLASSIFIER_MODEL_TYPE = "mlp_residue"
     MERGED_MODEL_TYPE = "merged"
     TRANSFORMER_SRC_PAD_IDX = 0
     TRANSFORMER_TRG_PAD_IDX = 0
