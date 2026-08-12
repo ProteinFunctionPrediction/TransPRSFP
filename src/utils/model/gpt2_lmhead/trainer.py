@@ -15,7 +15,6 @@ class GPT2LMHeadTrainer(Trainer):
         self.__t5_tokenizer = t5_tokenizer
 
     def compute_loss(self, model, inputs, return_outputs=False):
-        #print(inputs.keys())
         input_sequence = inputs["go_input_ids"]
         if self.encoder_model:
             if self.encoder_model_is_fixed:
@@ -41,10 +40,11 @@ class GPT2LMHeadTrainer(Trainer):
             "prot_input_ids": inputs["prot_input_ids"],
             "prot_attention_mask": inputs["prot_attention_mask"],
             "labels": inputs["go_input_ids"] if "labels" not in inputs else inputs["labels"],
-            "last_hidden_states": inputs["last_hidden_states"],
-            #"prot_sequence": inputs["prot_sequence"]
         }
         
+        if "last_hidden_states" in inputs:
+            model_inputs["last_hidden_states"] = inputs["last_hidden_states"]
+
         return super().prediction_step(
             model,
             model_inputs,

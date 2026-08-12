@@ -21,6 +21,7 @@ from utils.dataset.gpt2_lmhead.dataset import GPT2Dataset
 from model.classification_head.config.classification_head_model_config import ClassificationHeadModelConfig
 from model.transformer.config.transformer_model_config import TransformerModelConfig
 from model.gpt2_lmhead.config.gpt2_lmhead_model_config import Gpt2LMHeadModelConfig
+from model.mlp_residue_classifier.model import MLPResidueClassifier
 import pickle
 
 from torch.utils.data import DataLoader
@@ -44,6 +45,7 @@ from zarr.storage import NestedDirectoryStore
 import zarr
 from transformers import default_data_collator
 from utils.collator.zarr_embedding_collator import ZarrEmbeddingCollator
+from utils.driver.driver_utils import DriverUtils
 
 class EncoderType(Enum):
     PROT_T5 = 0
@@ -108,6 +110,57 @@ class Driver:
     
         return torch.argmax(logits, dim=-1)
 
+    def __build_dataset_manager(self):
+        if self.args.cluster_mapping_path is not None and self.args.prot_seq_to_prot_id_index_path is not None:
+            with open(self.args.cluster_mapping_path, "rb") as f:
+                cluster_mapping = pickle.load(f)
+            
+            with open(self.args.prot_seq_to_prot_id_index_path, "rb") as f:
+                prot_seq_to_id_index = pickle.load(f)
+
+            equivalent_prot_id_list = None
+            equivalent_prot_id_index_map = None
+            if self.args.equivalent_prot_id_list_path is not None:
+                equivalent_prot_id_index_map = {}
+                with open(self.args.equivalent_prot_id_list_path, "rb") as f:
+                    equivalent_prot_id_list = pickle.load(f)
+                
+                equivalent_prot_ids = set()
+                for i, prot_id_set in enumerate(equivalent_prot_id_list):
+                    for x in prot_id_set:
+                        assert x not in equivalent_prot_id_index_map
+                        equivalent_prot_id_index_map[x] = i
+
+            self.dataset_manager = DatasetManager(DatasetUtils.load(self.args.dataset),
+                                                  cluster_mapping,
+                                                  prot_seq_to_id_index,
+                                                  equivalent_prot_id_list,
+                                                  equivalent_prot_id_index_map)
+        else:
+            self.dataset_manager = DatasetManager(DatasetUtils.load(self.args.dataset))
+        self.dataset = self.dataset_manager.get_dataset()
+        if self.dataset_manager.dummy_label_fix_applied():
+            UniversalAccess.output.write(f"Dummy labels in the dataset have been fixed")
+
+        
+        if self.dataset_manager.is_dataset_augmented():
+            if self.args.inference:
+                raise RuntimeError("The dataset cannot be of augmented format when the script is run in inference mode!")
+            if self.args.model_type not in [Settings.GPT2_MODEL_TYPE, Settings.TRANSFORMER_MODEL_TYPE]:
+                raise RuntimeError("The dataset can be of augmented format only when the model type is either GPT2 or Transformer")
+            if self.args.dataset_like_region2go == '' or self.args.dataset_like_region2go is None or not os.path.exists(self.args.dataset_like_region2go):
+                raise RuntimeError("A valid dataset-like region2go path has to be provided when the supplied dataset is of augmented format")
+            
+
+        if self.args.model_type == Settings.MERGED_MODEL_TYPE or self.args.model_type == Settings.GPT2_MODEL_TYPE or self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
+            self.tf_tokenizer_fit_on_dataset = self.dataset_manager.get_tf_tokenizer()
+            self.tf_tokenizer_fit_on_dataset_reverse_word_index = Utils.build_reverse_index(self.tf_tokenizer_fit_on_dataset.word_index)
+
+        if self.tf_tokenizer_pred_reverse_word_index is None and self.tf_tokenizer_fit_on_dataset is not None:
+            self.tf_tokenizer_pred.word_index = self.tf_tokenizer_fit_on_dataset.word_index
+            self.tf_tokenizer_pred_reverse_word_index = Utils.build_reverse_index(self.tf_tokenizer_pred.word_index)
+
+
     def load_models(self):
         UniversalAccess.output.write("Loading ProtT5 tokenizer...")
         self.tokenizer = T5Tokenizer.from_pretrained("Rostlab/prot_t5_xl_uniref50", do_lower_case=False)
@@ -164,7 +217,7 @@ class Driver:
         else:
             model_type = "transformer"
 
-        if self.args.inference and self.args.model_type != Settings.MERGED_MODEL_TYPE and self.args.model_type != Settings.GPT2_MODEL_TYPE:
+        if self.args.inference and self.args.model_type != Settings.MERGED_MODEL_TYPE and self.args.model_type != Settings.GPT2_MODEL_TYPE and self.args.model_type != Settings.MLP_RESIDUE_CLASSIFIER_MODEL_TYPE:
             UniversalAccess.output.write(f"Loading {model_type} model...")
             self.model = ModelNavigator.load(self.args.model_path, self.encoder_model, self.args.device)
             self.model_go_term_index = self.model.get_config().go_term_to_index
@@ -188,58 +241,436 @@ class Driver:
             if self.loaded_go_term_index is None:
                 self.tf_tokenizer_pred.word_index = transformer_model_config.go_term_to_index
                 self.tf_tokenizer_pred_reverse_word_index = Utils.build_reverse_index(self.tf_tokenizer_pred.word_index)
+        elif self.args.inference and self.args.model_type == Settings.MLP_RESIDUE_CLASSIFIER_MODEL_TYPE:
+            self.model = MLPResidueClassifier()
 
-    def run(self):
-        self.load_models()
-        if self.args.cluster_mapping_path is not None and self.args.prot_seq_to_prot_id_index_path is not None:
-            with open(self.args.cluster_mapping_path, "rb") as f:
-                cluster_mapping = pickle.load(f)
+    def __run_inference(self, dataset_converted=None, transformer_utils=None):
+        if self.args.model_type == Settings.CLASSIFICATION_HEAD_MODEL_TYPE or self.args.model_type == Settings.MERGED_MODEL_TYPE:
+
+            if self.args.model_type == Settings.MERGED_MODEL_TYPE:
+                self.max_length = self.get_value_from_config_of_model(self.args.classification_head_model_path, "max_length")
+
+            data = ProteinDataset(dataset_converted, self.tokenizer, self.max_length)
+            data_loader = DataLoader(data, batch_size=self.BATCH_SIZE)
+
+        if self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE or self.args.model_type == Settings.MERGED_MODEL_TYPE:        
+            if self.args.model_type == Settings.MERGED_MODEL_TYPE and self.args.transformer_model_type == Settings.TRANSFORMER_MODEL_TYPE:
+                self.max_length = self.get_value_from_config_of_model(self.args.transformer_model_path, "max_length")
+            elif self.args.model_type == Settings.MERGED_MODEL_TYPE and self.args.transformer_model_type == Settings.GPT2_MODEL_TYPE:
+                self.max_length = self.args.max_length
+
+            if self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
+                batches = list(DatasetUtils.generate_batch_iterator(self.dataset, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
+            elif self.args.model_type == Settings.MERGED_MODEL_TYPE:
+                if self.args.transformer_model_type == Settings.TRANSFORMER_MODEL_TYPE:
+                    batches = list(DatasetUtils.generate_batch_iterator(self.dataset, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
+                elif self.args.transformer_model_type == Settings.GPT2_MODEL_TYPE:
+                    batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self.dataset, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length, embedding_offset_lookup_table=self.embedding_offset_lookup_table))
+
+        if self.args.model_type == Settings.GPT2_MODEL_TYPE:
+            batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self.dataset, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length, embedding_offset_lookup_table=self.embedding_offset_lookup_table))
+
+        if self.args.model_type == Settings.CLASSIFICATION_HEAD_MODEL_TYPE:
+            predictions = classification_head_utils.run_classification_head_prediction(data_loader, self.model, self.args.threshold, self.BATCH_SIZE, self)
+            if self.args.compute_metrics:
+                print(DriverUtils.evaluate_classification_head_predictions(self, predictions, self.model.get_config().go_term_to_index, self.model.get_config().reverse_go_term_to_index))
+
+        elif self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
+            average_metrics, predictions = transformer_utils.run_transformer_prediction(batches,
+                                                                                        self.model,
+                                                                                        self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                                        self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                                        self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                                        self.tf_tokenizer_pred_reverse_word_index,
+                                                                                        self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_SOS_TOKEN, None),
+                                                                                        self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EOS_TOKEN, None),
+                                                                                        self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None),
+                                                                                        self.tf_tokenizer_fit_on_dataset_reverse_word_index,
+                                                                                        self.BATCH_SIZE,
+                                                                                        self,
+                                                                                        compute_go_based_metrics=self.args.compute_metrics,
+                                                                                        save_go_based_metrics=self.args.compute_metrics,
+                                                                                        compute_metrics=self.args.compute_metrics,
+                                                                                        go_based_metrics_filepath=self.go_term_metrics_filepath_prefix + ".pkl")
+            if self.args.compute_metrics:
+                print(average_metrics)
+
+        elif self.args.model_type == Settings.GPT2_MODEL_TYPE:
+            run_prediction_params = {'batches': batches,
+                                     'encoder': self.encoder_model.to(self.args.device) if self.encoder_model else self.encoder_model,
+                                     'model': self.model,
+                                     'caller': self,
+                                     'pred_SOS_token_id': self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                     'pred_EOS_token_id': self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                     'pred_EMPTY_token_id': self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                     'pred_reverse_word_index': self.tf_tokenizer_pred_reverse_word_index,
+                                     'true_SOS_token_id': self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_SOS_TOKEN, None),
+                                     'true_EOS_token_id': self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EOS_TOKEN, None),
+                                     'true_EMPTY_token_id': self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None),
+                                     'true_reverse_word_index': self.tf_tokenizer_fit_on_dataset_reverse_word_index,
+                                     'compute_go_based_metrics': self.args.compute_metrics,
+                                     'save_go_based_metrics': self.args.compute_metrics,
+                                     'compute_metrics': self.args.compute_metrics,
+                                     'go_based_metrics_filepath': self.go_term_metrics_filepath_prefix + ".pkl",
+                                     'go_based_metrics_reg2go_filepath': self.go_term_metrics_filepath_prefix + "_reg2go.pkl",
+                                     'dataset_like_region2go_path': self.args.dataset_like_region2go,
+                                     'return_probs': self.return_probs,
+                                     'keep_top': self.args.keep_top,
+                                     'embeddings': None if not self.args.embedding_store else self.embeddings,
+                                     'embedding_offset_lookup_table': None if not self.args.embedding_store else self.embedding_offset_lookup_table}
+            if self.return_probs:
+                average_metrics, predictions, probs = self.gpt2_lmhead_utils.run_prediction(**run_prediction_params)
+                with open(self.args.save_probs_to, "wb") as f:
+                    pickle.dump(probs, f)
+            else:
+                average_metrics, predictions = self.gpt2_lmhead_utils.run_prediction(**run_prediction_params)
+
+            if self.args.compute_metrics:
+                print(average_metrics)
+        else: # merged model
+            UniversalAccess.output.write(f"Loading {self.args.transformer_model_type} model...")
+            if self.args.transformer_model_type == Settings.TRANSFORMER_MODEL_TYPE:
+                self.model = ModelNavigator.load(self.args.transformer_model_path, self.encoder_model, self.args.device)
+                UniversalAccess.output.write("Done!")
+                self.max_length = self.model.get_config().max_length
+                transformer_model_go_term_to_index = self.model.get_config().go_term_to_index
+                transformer_model_reverse_go_term_to_index = self.model.get_config().reverse_go_term_to_index
+                _, transformer_predictions = transformer_utils.run_transformer_prediction(batches,
+                                                                                            self.model,
+                                                                                            self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                                            self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                                            self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                                            self.tf_tokenizer_pred_reverse_word_index,
+                                                                                            self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_SOS_TOKEN, None),
+                                                                                            self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EOS_TOKEN, None),
+                                                                                            self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None),
+                                                                                            self.tf_tokenizer_fit_on_dataset_reverse_word_index,
+                                                                                            self.BATCH_SIZE,
+                                                                                            self,
+                                                                                            compute_go_based_metrics=False,
+                                                                                            save_go_based_metrics=False,
+                                                                                            compute_metrics=False,
+                                                                                            go_based_metrics_filepath='')
+
+            elif self.args.transformer_model_type == Settings.GPT2_MODEL_TYPE:
+                gpt2_lmhead_pretrained_config = GPT2Config.from_pretrained(self.args.transformer_model_path)
+                self.model = GPT2LMHeadModel.from_pretrained(self.args.transformer_model_path, config=gpt2_lmhead_pretrained_config).to(self.args.device)
+                UniversalAccess.output.write("Done!")
+                self.max_length = self.args.max_length
+
+                _, transformer_predictions = self.gpt2_lmhead_utils.run_prediction(batches=batches,
+                                                                                    encoder=self.encoder_model.to(self.args.device) if self.encoder_model else self.encoder_model,
+                                                                                    model=self.model,
+                                                                                    caller=self,
+                                                                                    pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                                                    pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                                                    pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                                                                    pred_reverse_word_index=self.tf_tokenizer_pred_reverse_word_index,
+                                                                                    true_SOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_SOS_TOKEN, None),
+                                                                                    true_EOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EOS_TOKEN, None),
+                                                                                    true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None),
+                                                                                    true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
+                                                                                    compute_go_based_metrics=False,
+                                                                                    save_go_based_metrics=False,
+                                                                                    go_based_metrics_filepath='',
+                                                                                    compute_metrics=False,
+                                                                                    embeddings=None if not self.args.embedding_store else self.embeddings,
+                                                                                    embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table)
+            Utils.free_gpu_memory()
+            UniversalAccess.output.write(f"Loading classification model...")
+            self.model = ModelNavigator.load(self.args.classification_head_model_path, self.encoder_model, self.args.device)
+            UniversalAccess.output.write("Done!")
+            self.max_length = self.model.get_config().max_length
+            classification_model_go_term_to_index = self.model.get_config().go_term_to_index
+            classification_model_reverse_go_term_to_index = self.model.get_config().reverse_go_term_to_index
+            classification_predictions = classification_head_utils.run_classification_head_prediction(data_loader, self.model, self.args.threshold, self.BATCH_SIZE, self)
             
-            with open(self.args.prot_seq_to_prot_id_index_path, "rb") as f:
-                prot_seq_to_id_index = pickle.load(f)
-
-            equivalent_prot_id_list = None
-            equivalent_prot_id_index_map = None
-            if self.args.equivalent_prot_id_list_path is not None:
-                equivalent_prot_id_index_map = {}
-                with open(self.args.equivalent_prot_id_list_path, "rb") as f:
-                    equivalent_prot_id_list = pickle.load(f)
-                
-                equivalent_prot_ids = set()
-                for i, prot_id_set in enumerate(equivalent_prot_id_list):
-                    for x in prot_id_set:
-                        assert x not in equivalent_prot_id_index_map
-                        equivalent_prot_id_index_map[x] = i
-
-            self.dataset_manager = DatasetManager(DatasetUtils.load(self.args.dataset),
-                                                  cluster_mapping,
-                                                  prot_seq_to_id_index,
-                                                  equivalent_prot_id_list,
-                                                  equivalent_prot_id_index_map)
-        else:
-            self.dataset_manager = DatasetManager(DatasetUtils.load(self.args.dataset))
-        self.dataset = self.dataset_manager.get_dataset()
-        if self.dataset_manager.dummy_label_fix_applied():
-            UniversalAccess.output.write(f"Dummy labels in the dataset have been fixed")
-
+            
+            
+            DriverUtils.produce_merged_prediction_output(self, classification_predictions, transformer_predictions,
+                                                    classification_model_go_term_to_index,
+                                                    classification_model_reverse_go_term_to_index,
+                                                    self.tf_tokenizer_pred.word_index,
+                                                    self.tf_tokenizer_pred_reverse_word_index,
+                                                    transformer_utils)
+            
+            if self.args.compute_metrics:
+                print(DriverUtils.evaluate_merged_mode_prediction(self, classification_predictions,
+                                                            transformer_predictions,
+                                                            classification_model_go_term_to_index,
+                                                            classification_model_reverse_go_term_to_index,
+                                                            self.tf_tokenizer_pred.word_index,
+                                                            self.tf_tokenizer_pred_reverse_word_index))
+    
+    def __run_training(self, dataset_converted=None, dataset_converter=None, transformer_utils=None):
+        if not os.path.exists(self.args.model_save_dir) and self.args.model_type != Settings.TRANSFORMER_MODEL_TYPE:
+            os.mkdir(self.args.model_save_dir)
         
-        if self.dataset_manager.is_dataset_augmented():
-            if self.args.inference:
-                raise RuntimeError("The dataset cannot be of augmented format when the script is run in inference mode!")
-            if self.args.model_type not in [Settings.GPT2_MODEL_TYPE, Settings.TRANSFORMER_MODEL_TYPE]:
-                raise RuntimeError("The dataset can be of augmented format only when the model type is either GPT2 or Transformer")
-            if self.args.dataset_like_region2go == '' or self.args.dataset_like_region2go is None or not os.path.exists(self.args.dataset_like_region2go):
-                raise RuntimeError("A valid dataset-like region2go path has to be provided when the supplied dataset is of augmented format")
+        if self.args.model_type == Settings.CLASSIFICATION_HEAD_MODEL_TYPE:
+            n_train = DatasetUtils.get_training_count(self.args.training_dataset_ratio, len(dataset_converted))
             
+            
+            train_data = ProteinDataset(dataset_converted[:n_train], self.tokenizer, self.max_length)
+            train_loader = DataLoader(train_data, batch_size=self.BATCH_SIZE)
+            
+            val_data = ProteinDataset(dataset_converted[n_train:], self.tokenizer, self.max_length)
+            val_loader = DataLoader(val_data, batch_size=self.BATCH_SIZE)
+            
+            go_term_count = self.dataset_manager.get_go_term_count()
+            model_config = ClassificationHeadModelConfig("./model.pth", go_term_count,
+                                                            self.max_length, "./go_term_to_index.pkl",
+                                                            dataset_converter.go_term_to_index_map)
+            model_config.build()
+            self.model = ModelNavigator.create(model_config, self.encoder_model, self.args.device)
+            
+            classification_head_utils.train(self.args.epoch, self.args.learning_rate, self.model,
+                                            go_term_count, train_loader, val_loader,
+                                            self.args.save_per_epoch, self.args.model_save_dir)
+        
+        elif self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
+            n_train = self.dataset_manager.get_training_count(self.args.training_dataset_ratio)
+            
+            weight_setter = WeightSetter(self.dataset_manager.get_unwrapped_dataset(),
+                                            self.tf_tokenizer_fit_on_dataset,
+                                            len(self.tf_tokenizer_fit_on_dataset.word_index) + 1,
+                                            Settings.TRANSFORMER_TRG_PAD_IDX)
+            weights = weight_setter.get_weights()
+            
+            self.dataset_manager.shuffle()
+            self.dataset = self.dataset_manager.get_dataset()
+            self.dataset_manager.split_train_val(self.dataset_manager.get_datapoint_count() - n_train)
+            
+            dataset_train_part = self.dataset_manager.get_training_set()
+            dataset_val_part = self.dataset_manager.get_validation_set()
+            
+            dataset_train_part_unwrapped = dataset_train_part
+            dataset_val_part_unwrapped = dataset_val_part
+            
+            if self.dataset_manager.is_dataset_augmented():
+                dataset_train_part_unwrapped = DatasetUtils.unwrap_augmented_dataset(dataset_train_part)
+                # TODO when needed, incorporate the use of dataset-like region2go for metric computation
+                dataset_val_part_unwrapped = DatasetUtils.unwrap_augmented_dataset(dataset_val_part, pick_one=True)
+            
+            
+            train_batches = list(DatasetUtils.generate_batch_iterator(dataset_train_part_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
+            validation_batches = list(DatasetUtils.generate_batch_iterator(dataset_val_part_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
+            
+            model_config = TransformerModelConfig("./model.pth", len(self.tokenizer.get_vocab()),
+                                                    len(self.tf_tokenizer_fit_on_dataset.word_index) + 1,
+                                                    self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                    self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                    self.max_length, Settings.TRANSFORMER_EMBED_SIZE,
+                                                    Settings.TRANSFORMER_NUM_LAYERS, Settings.TRANSFORMER_HEADS,
+                                                    "./go_term_to_index.pkl", self.tf_tokenizer_fit_on_dataset.word_index)
+            model_config.build()
 
-        if self.args.model_type == Settings.MERGED_MODEL_TYPE or self.args.model_type == Settings.GPT2_MODEL_TYPE or self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
-            self.tf_tokenizer_fit_on_dataset = self.dataset_manager.get_tf_tokenizer()
-            self.tf_tokenizer_fit_on_dataset_reverse_word_index = Utils.build_reverse_index(self.tf_tokenizer_fit_on_dataset.word_index)
+            transformer_utils.train(train_batches,
+                                    validation_batches,
+                                    len(self.tf_tokenizer_fit_on_dataset.word_index) - 1,
+                                    self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                    self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                    self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                    self.tf_tokenizer_pred_reverse_word_index,
+                                    self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                    self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                    self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
+                                    self.tf_tokenizer_fit_on_dataset_reverse_word_index,
+                                    self.args.learning_rate,
+                                    Settings.TRANSFORMER_SRC_PAD_IDX,
+                                    Settings.TRANSFORMER_TRG_PAD_IDX,
+                                    model_config.src_vocab_size,
+                                    model_config.trg_vocab_size,
+                                    self.encoder_model,
+                                    model_config.embed_size,
+                                    self.args.epoch,
+                                    self.args.tensorboard_log_dir,
+                                    self.args.model_save_dir,
+                                    self.args.save_per_epoch,
+                                    None,
+                                    weights,
+                                    model_config)
 
-        if self.tf_tokenizer_pred_reverse_word_index is None and self.tf_tokenizer_fit_on_dataset is not None:
-            self.tf_tokenizer_pred.word_index = self.tf_tokenizer_fit_on_dataset.word_index
-            self.tf_tokenizer_pred_reverse_word_index = Utils.build_reverse_index(self.tf_tokenizer_pred.word_index)
+        elif self.args.model_type == Settings.GPT2_MODEL_TYPE:
+            n_train = self.dataset_manager.get_training_count(self.args.training_dataset_ratio)
 
+            if Settings.GPT2_USE_CUSTOM_WEIGHTS:
+                weight_setter = WeightSetter(self.dataset, self.tf_tokenizer_fit_on_dataset, len(self.tf_tokenizer_fit_on_dataset.word_index) + 1, Settings.TRANSFORMER_TRG_PAD_IDX)
+                weights = torch.tensor(weight_setter.get_weights()).to(self.args.device)
+            else:
+                weights = None
+            
+            self.dataset_manager.shuffle()
+            self.dataset = self.dataset_manager.get_dataset()
+            
+            self.dataset_manager.split_train_val(self.dataset_manager.get_datapoint_count() - n_train)
+            train = self.dataset_manager.get_training_set()
+            val = self.dataset_manager.get_validation_set()
+
+            self._train_set = train
+            self._validation_set = val
+            
+            self._train_set_unwrapped = train
+            self._validation_set_unwrapped = val
+            
+            if self.dataset_manager.is_dataset_augmented():
+                self._train_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(train)
+                self._validation_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(val, pick_one=True)
+            
+            
+            self._close_validation_set = None
+            self._distant_validation_set = None
+            
+            self._close_validation_set_unwrapped = None
+            self._distant_validation_set_unwrapped = None
+            
+            if self.dataset_manager.is_distant_validation_set_split_available():
+                self._close_validation_set = self.dataset_manager.get_close_validation_set()
+                self._distant_validation_set = self.dataset_manager.get_distant_validation_set()
+                
+                self._close_validation_set_unwrapped = self._close_validation_set
+                self._distant_validation_set_unwrapped = self._distant_validation_set
+                
+                if self.dataset_manager.is_dataset_augmented():
+                    self._close_validation_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(self._close_validation_set)
+                    self._distant_validation_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(self._distant_validation_set)
+                
+            
+            if self.args.save_training_set_to is not None and not os.path.exists(self.args.save_training_set_to):
+                with open(self.args.save_training_set_to, "wb") as training_split_f:
+                    pickle.dump(train, training_split_f)
+
+            if self.args.save_test_set_to is not None and not os.path.exists(self.args.save_test_set_to):
+                with open(self.args.save_test_set_to, "wb") as validation_split_f:
+                    pickle.dump(val, validation_split_f)
+            
+            train_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._train_set_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length, embedding_offset_lookup_table=self.embedding_offset_lookup_table))
+            validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._validation_set_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length, embedding_offset_lookup_table=self.embedding_offset_lookup_table))
+
+            if self.args.continue_from_checkpoint is not None:
+                assert os.path.exists(self.args.continue_from_checkpoint)
+                UniversalAccess.output.write(f"Checkpoint: {self.args.continue_from_checkpoint}")
+                gpt2_lmhead_pretrained_config = GPT2Config.from_pretrained(self.args.continue_from_checkpoint)
+                if self.encoder_type == EncoderType.CUSTOM_TRAINABLE:
+                    state_dict = torch.load(os.path.join(self.args.continue_from_checkpoint, "pytorch_model.bin"), map_location="cpu")
+                    self.encoder_model.load_state_dict(Utils.from_dict_fetch_only_starting_with(state_dict, "encoder.", remove_prefix=True), strict=True)
+                model = GPT2LMHeadModel.from_pretrained(self.args.continue_from_checkpoint, config=gpt2_lmhead_pretrained_config).to(self.args.device)
+                model.encoder = self.encoder_model
+                if self.encoder_type == EncoderType.CUSTOM_TRAINABLE:
+                    assert model.encoder.embedding.weight.requires_grad
+                self.model_for_inference = model
+            else:
+                model_config = Gpt2LMHeadModelConfig(filepath="./model.pth",
+                                                    n_embd=Settings.TRANSFORMER_EMBED_SIZE,
+                                                    heads=4,
+                                                    vocab_size=len(self.tf_tokenizer_fit_on_dataset.word_index) + 1,
+                                                    n_positions=self.max_length,
+                                                    num_layers=1,
+                                                    sos_token=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
+                                                    eos_token=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
+                                                    go_term_to_index_filepath="./go_term_to_index.pkl",
+                                                    go_term_to_index=self.tf_tokenizer_fit_on_dataset.word_index)
+                model_config.build()
+                model = ModelNavigator.create(config=model_config, encoder_model=self.encoder_model, device=self.args.device)
+                self.model_for_inference = model
+            
+            if self.args.go_term_index is not None:
+                with open(self.args.go_term_index, "wb") as go_term_index_f:
+                    pickle.dump(self.tf_tokenizer_fit_on_dataset.word_index, go_term_index_f)
+            
+            metric_for_best_model = "validation_inference_token_based_f1" if not self.dataset_manager.is_dataset_augmented() else "validation_inference_token_based_f1_reg2go"
+            if self.dataset_manager.is_distant_validation_set_split_available():
+                metric_for_best_model = "close_" + metric_for_best_model             
+            
+            UniversalAccess.output.write(f"metric_for_best_model={metric_for_best_model}")     
+
+            training_args_dict = {
+                'run_name': self.args.run_name,
+                'output_dir': self.args.model_save_dir,
+                'overwrite_output_dir': False,
+                'evaluation_strategy': 'epoch',
+                'save_strategy': 'epoch',
+                'num_train_epochs': self.args.epoch,
+                'learning_rate': self.args.learning_rate,
+                'per_device_train_batch_size': self.BATCH_SIZE,
+                'per_device_eval_batch_size': self.args.eval_batch_size if self.args.eval_batch_size is not None else self.BATCH_SIZE,
+                # TODO parameterize save_total_limit
+                'save_total_limit': 10 + 1,
+                'disable_tqdm': True,
+                'logging_steps': 10,
+                'dataloader_num_workers': 10,
+                'fp16': False,
+                'ddp_find_unused_parameters': False,
+                'remove_unused_columns': False,
+                'eval_accumulation_steps': 10,
+                'load_best_model_at_end': True,
+                'metric_for_best_model': metric_for_best_model,
+                'greater_is_better': True,
+            }
+
+            if self.args.device == 'cpu':
+                training_args_dict['no_cuda'] = True
+
+            training_args = TrainingArguments(**training_args_dict)
+            
+            gpt2_lm_head_trainer_args_dict = {'encoder_model': self.encoder_model.to(self.args.device) if self.encoder_model else self.encoder_model,
+                                              'encoder_model_is_fixed': False if self.args.use_trainable_custom_encoder else True,
+                                              'custom_weights': weights,
+                                              'embeddings': None if not self.args.embedding_store else self.embeddings,
+                                              'embedding_offset_lookup_table': None if not self.args.embedding_store else self.embedding_offset_lookup_table,
+                                              'device_from_args': self.args.device,
+                                              't5_tokenizer': self.tokenizer,
+                                              'model': model.to(self.args.device),
+                                              'args':training_args,
+                                              'train_dataset': GPT2Dataset(train_batches),
+                                              'eval_dataset': GPT2Dataset(validation_batches),
+                                              'compute_metrics': self.compute_metrics,
+                                              'preprocess_logits_for_metrics': self.preprocess_logits_for_metrics}
+            
+            if not self.args.embedding_store:
+                gpt2_lm_head_trainer_args_dict['data_collator'] = ZarrEmbeddingCollator(store_path=self.args.embedding_store, cache_bytes=2 * 1024**3)
+            else:
+                gpt2_lm_head_trainer_args_dict['data_collator'] = self.collate_fn
+
+            trainer = GPT2LMHeadTrainer(**gpt2_lm_head_trainer_args_dict)
+            #try:
+            #    print(trainer.optimizer.state_dict())
+            #except Exception as se:
+            #    trainer.create_optimizer()
+            #    print(trainer.optimizer.state_dict())
+            
+            trainer.args._n_gpu = 1
+            if self.args.continue_from_checkpoint is not None:
+                if trainer.optimizer is None:
+                    trainer.create_optimizer()
+                    print("created trainer optimizer", trainer.optimizer is not None)
+                
+                optimizer_state_dict = torch.load(os.path.join(self.args.continue_from_checkpoint, "optimizer.pt"))
+                current_params = sum(len(g["params"]) for g in trainer.optimizer.param_groups)
+                saved_params = sum(len(g["params"]) for g in optimizer_state_dict["param_groups"])
+                print(f"current_params: {current_params}, saved_params: {saved_params}")
+                assert current_params == saved_params
+                trainer.optimizer.load_state_dict(optimizer_state_dict)
+                print("loaded optimizer")
+                #trainer.create_optimizer()
+
+
+
+                with open(os.path.join(self.args.continue_from_checkpoint, "trainer_state.json")) as f:
+                    trainer_state_dict = json.loads(f.read())
+                
+                max_steps = trainer_state_dict["max_steps"]
+                
+                if trainer.lr_scheduler is None:
+                    trainer.create_scheduler(num_training_steps=max_steps)
+                    print("created trainer scheduler", trainer.lr_scheduler is not None)
+
+                trainer.lr_scheduler.load_state_dict(torch.load(os.path.join(self.args.continue_from_checkpoint, "scheduler.pt")))
+                print("loaded scheduler")
+                
+
+            trainer.train()
+
+    def __determine_max_length(self):
         if self.args.train:
             if self.args.max_length > 0:
                 self.max_length = self.args.max_length
@@ -255,11 +686,26 @@ class Driver:
             else:
                 self.max_length = DatasetUtils.infer_maximum_length(self.dataset)
 
-
+    def __determine_batch_size(self):
         if self.args.train:
             self.BATCH_SIZE = self.args.batch_size
         else:
             self.BATCH_SIZE = 8
+
+
+    def run(self):
+        UniversalAccess.output.write("Building dataset manager...")
+        self.__build_dataset_manager()
+        UniversalAccess.output.write("Done!")
+        self.load_models()
+        
+
+        self.__determine_max_length()
+        self.__determine_batch_size()
+
+        dataset_converted=None
+        transformer_utils=None
+
 
         if self.args.model_type == Settings.CLASSIFICATION_HEAD_MODEL_TYPE or self.args.model_type == Settings.MERGED_MODEL_TYPE:
             classification_head_model_config = None
@@ -287,447 +733,11 @@ class Driver:
         elif self.args.model_type == Settings.GPT2_MODEL_TYPE:
             self.gpt2_lmhead_utils = GPT2LMHeadUtils(self.args.device)
 
-
         if self.args.inference:
-            if self.args.model_type == Settings.CLASSIFICATION_HEAD_MODEL_TYPE or self.args.model_type == Settings.MERGED_MODEL_TYPE:
-
-                if self.args.model_type == Settings.MERGED_MODEL_TYPE:
-                    self.max_length = self.get_value_from_config_of_model(self.args.classification_head_model_path, "max_length")
-
-                data = ProteinDataset(dataset_converted, self.tokenizer, self.max_length)
-                data_loader = DataLoader(data, batch_size=self.BATCH_SIZE)
-
-            if self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE or self.args.model_type == Settings.MERGED_MODEL_TYPE:        
-                if self.args.model_type == Settings.MERGED_MODEL_TYPE and self.args.transformer_model_type == Settings.TRANSFORMER_MODEL_TYPE:
-                    self.max_length = self.get_value_from_config_of_model(self.args.transformer_model_path, "max_length")
-                elif self.args.model_type == Settings.MERGED_MODEL_TYPE and self.args.transformer_model_type == Settings.GPT2_MODEL_TYPE:
-                    self.max_length = self.args.max_length
-
-                if self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
-                    batches = list(DatasetUtils.generate_batch_iterator(self.dataset, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
-                elif self.args.model_type == Settings.MERGED_MODEL_TYPE:
-                    if self.args.transformer_model_type == Settings.TRANSFORMER_MODEL_TYPE:
-                        batches = list(DatasetUtils.generate_batch_iterator(self.dataset, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
-                    elif self.args.transformer_model_type == Settings.GPT2_MODEL_TYPE:
-                        batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self.dataset, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length, embedding_offset_lookup_table=self.embedding_offset_lookup_table))
-
-            if self.args.model_type == Settings.GPT2_MODEL_TYPE:
-                batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self.dataset, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length, embedding_offset_lookup_table=self.embedding_offset_lookup_table))
-
-            if self.args.model_type == Settings.CLASSIFICATION_HEAD_MODEL_TYPE:
-                predictions = classification_head_utils.run_classification_head_prediction(data_loader, self.model, self.args.threshold, self.BATCH_SIZE, self)
-                if self.args.compute_metrics:
-                    print(self.evaluate_classification_head_predictions(predictions, self.model.get_config().go_term_to_index, self.model.get_config().reverse_go_term_to_index))
-
-            elif self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
-                average_metrics, predictions = transformer_utils.run_transformer_prediction(batches,
-                                                                                            self.model,
-                                                                                            self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                                                                            self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                                                                            self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                                                                            self.tf_tokenizer_pred_reverse_word_index,
-                                                                                            self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_SOS_TOKEN, None),
-                                                                                            self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EOS_TOKEN, None),
-                                                                                            self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None),
-                                                                                            self.tf_tokenizer_fit_on_dataset_reverse_word_index,
-                                                                                            self.BATCH_SIZE,
-                                                                                            self,
-                                                                                            compute_go_based_metrics=self.args.compute_metrics,
-                                                                                            save_go_based_metrics=self.args.compute_metrics,
-                                                                                            compute_metrics=self.args.compute_metrics,
-                                                                                            go_based_metrics_filepath=self.go_term_metrics_filepath_prefix + ".pkl")
-                if self.args.compute_metrics:
-                    print(average_metrics)
-
-            elif self.args.model_type == Settings.GPT2_MODEL_TYPE:
-                run_prediction_params = {'batches': batches,
-                                         'encoder': self.encoder_model.to(self.args.device) if self.encoder_model else self.encoder_model,
-                                         'model': self.model,
-                                         'caller': self,
-                                         'pred_SOS_token_id': self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                         'pred_EOS_token_id': self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                         'pred_EMPTY_token_id': self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                         'pred_reverse_word_index': self.tf_tokenizer_pred_reverse_word_index,
-                                         'true_SOS_token_id': self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_SOS_TOKEN, None),
-                                         'true_EOS_token_id': self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EOS_TOKEN, None),
-                                         'true_EMPTY_token_id': self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None),
-                                         'true_reverse_word_index': self.tf_tokenizer_fit_on_dataset_reverse_word_index,
-                                         'compute_go_based_metrics': self.args.compute_metrics,
-                                         'save_go_based_metrics': self.args.compute_metrics,
-                                         'compute_metrics': self.args.compute_metrics,
-                                         'go_based_metrics_filepath': self.go_term_metrics_filepath_prefix + ".pkl",
-                                         'go_based_metrics_reg2go_filepath': self.go_term_metrics_filepath_prefix + "_reg2go.pkl",
-                                         'dataset_like_region2go_path': self.args.dataset_like_region2go,
-                                         'return_probs': self.return_probs,
-                                         'keep_top': self.args.keep_top,
-                                         'embeddings': None if not self.args.embedding_store else self.embeddings,
-                                         'embedding_offset_lookup_table': None if not self.args.embedding_store else self.embedding_offset_lookup_table}
-                if self.return_probs:
-                    average_metrics, predictions, probs = self.gpt2_lmhead_utils.run_prediction(**run_prediction_params)
-                    with open(self.args.save_probs_to, "wb") as f:
-                        pickle.dump(probs, f)
-                else:
-                    average_metrics, predictions = self.gpt2_lmhead_utils.run_prediction(**run_prediction_params)
-
-                if self.args.compute_metrics:
-                    print(average_metrics)
-
-            else: # merged model
-                UniversalAccess.output.write(f"Loading {self.args.transformer_model_type} model...")
-                if self.args.transformer_model_type == Settings.TRANSFORMER_MODEL_TYPE:
-                    self.model = ModelNavigator.load(self.args.transformer_model_path, self.encoder_model, self.args.device)
-                    UniversalAccess.output.write("Done!")
-                    self.max_length = self.model.get_config().max_length
-                    transformer_model_go_term_to_index = self.model.get_config().go_term_to_index
-                    transformer_model_reverse_go_term_to_index = self.model.get_config().reverse_go_term_to_index
-                    _, transformer_predictions = transformer_utils.run_transformer_prediction(batches,
-                                                                                              self.model,
-                                                                                              self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                                                                              self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                                                                              self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                                                                              self.tf_tokenizer_pred_reverse_word_index,
-                                                                                              self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_SOS_TOKEN, None),
-                                                                                              self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EOS_TOKEN, None),
-                                                                                              self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None),
-                                                                                              self.tf_tokenizer_fit_on_dataset_reverse_word_index,
-                                                                                              self.BATCH_SIZE,
-                                                                                              self,
-                                                                                              compute_go_based_metrics=False,
-                                                                                              save_go_based_metrics=False,
-                                                                                              compute_metrics=False,
-                                                                                              go_based_metrics_filepath='')
-
-                elif self.args.transformer_model_type == Settings.GPT2_MODEL_TYPE:
-                    gpt2_lmhead_pretrained_config = GPT2Config.from_pretrained(self.args.transformer_model_path)
-                    self.model = GPT2LMHeadModel.from_pretrained(self.args.transformer_model_path, config=gpt2_lmhead_pretrained_config).to(self.args.device)
-                    UniversalAccess.output.write("Done!")
-                    self.max_length = self.args.max_length
-
-                    _, transformer_predictions = self.gpt2_lmhead_utils.run_prediction(batches=batches,
-                                                                                       encoder=self.encoder_model.to(self.args.device) if self.encoder_model else self.encoder_model,
-                                                                                       model=self.model,
-                                                                                       caller=self,
-                                                                                       pred_SOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                                                                       pred_EOS_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                                                                       pred_EMPTY_token_id=self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                                                                       pred_reverse_word_index=self.tf_tokenizer_pred_reverse_word_index,
-                                                                                       true_SOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_SOS_TOKEN, None),
-                                                                                       true_EOS_token_id=self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EOS_TOKEN, None),
-                                                                                       true_EMPTY_token_id=self.tf_tokenizer_fit_on_dataset.word_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None),
-                                                                                       true_reverse_word_index=self.tf_tokenizer_fit_on_dataset_reverse_word_index,
-                                                                                       compute_go_based_metrics=False,
-                                                                                       save_go_based_metrics=False,
-                                                                                       go_based_metrics_filepath='',
-                                                                                       compute_metrics=False,
-                                                                                       embeddings=None if not self.args.embedding_store else self.embeddings,
-                                                                                       embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table)
-                Utils.free_gpu_memory()
-                UniversalAccess.output.write(f"Loading classification model...")
-                self.model = ModelNavigator.load(self.args.classification_head_model_path, self.encoder_model, self.args.device)
-                UniversalAccess.output.write("Done!")
-                self.max_length = self.model.get_config().max_length
-                classification_model_go_term_to_index = self.model.get_config().go_term_to_index
-                classification_model_reverse_go_term_to_index = self.model.get_config().reverse_go_term_to_index
-                classification_predictions = classification_head_utils.run_classification_head_prediction(data_loader, self.model, self.args.threshold, self.BATCH_SIZE, self)
-                
-                
-                
-                self.produce_merged_prediction_output(classification_predictions, transformer_predictions,
-                                                      classification_model_go_term_to_index,
-                                                      classification_model_reverse_go_term_to_index,
-                                                      self.tf_tokenizer_pred.word_index,
-                                                      self.tf_tokenizer_pred_reverse_word_index,
-                                                      transformer_utils)
-                
-                if self.args.compute_metrics:
-                    print(self.evaluate_merged_mode_prediction(classification_predictions,
-                                                               transformer_predictions,
-                                                               classification_model_go_term_to_index,
-                                                               classification_model_reverse_go_term_to_index,
-                                                               self.tf_tokenizer_pred.word_index,
-                                                               self.tf_tokenizer_pred_reverse_word_index))
+            self.__run_inference(dataset_converted=dataset_converted, transformer_utils=transformer_utils)
 
         else: # training mode
-            
-            if not os.path.exists(self.args.model_save_dir) and self.args.model_type != Settings.TRANSFORMER_MODEL_TYPE:
-                os.mkdir(self.args.model_save_dir)
-            
-            if self.args.model_type == Settings.CLASSIFICATION_HEAD_MODEL_TYPE:
-                n_train = DatasetUtils.get_training_count(self.args.training_dataset_ratio, len(dataset_converted))
-                
-                
-                train_data = ProteinDataset(dataset_converted[:n_train], self.tokenizer, self.max_length)
-                train_loader = DataLoader(train_data, batch_size=self.BATCH_SIZE)
-                
-                val_data = ProteinDataset(dataset_converted[n_train:], self.tokenizer, self.max_length)
-                val_loader = DataLoader(val_data, batch_size=self.BATCH_SIZE)
-                
-                go_term_count = self.dataset_manager.get_go_term_count()
-                model_config = ClassificationHeadModelConfig("./model.pth", go_term_count,
-                                                             self.max_length, "./go_term_to_index.pkl",
-                                                             dataset_converter.go_term_to_index_map)
-                model_config.build()
-                self.model = ModelNavigator.create(model_config, self.encoder_model, self.args.device)
-                
-                classification_head_utils.train(self.args.epoch, self.args.learning_rate, self.model,
-                                                go_term_count, train_loader, val_loader,
-                                                self.args.save_per_epoch, self.args.model_save_dir)
-            
-            elif self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
-                n_train = self.dataset_manager.get_training_count(self.args.training_dataset_ratio)
-                
-                weight_setter = WeightSetter(self.dataset_manager.get_unwrapped_dataset(),
-                                             self.tf_tokenizer_fit_on_dataset,
-                                             len(self.tf_tokenizer_fit_on_dataset.word_index) + 1,
-                                             Settings.TRANSFORMER_TRG_PAD_IDX)
-                weights = weight_setter.get_weights()
-                
-                self.dataset_manager.shuffle()
-                self.dataset = self.dataset_manager.get_dataset()
-                self.dataset_manager.split_train_val(self.dataset_manager.get_datapoint_count() - n_train)
-                
-                dataset_train_part = self.dataset_manager.get_training_set()
-                dataset_val_part = self.dataset_manager.get_validation_set()
-                
-                dataset_train_part_unwrapped = dataset_train_part
-                dataset_val_part_unwrapped = dataset_val_part
-                
-                if self.dataset_manager.is_dataset_augmented():
-                    dataset_train_part_unwrapped = DatasetUtils.unwrap_augmented_dataset(dataset_train_part)
-                    # TODO when needed, incorporate the use of dataset-like region2go for metric computation
-                    dataset_val_part_unwrapped = DatasetUtils.unwrap_augmented_dataset(dataset_val_part, pick_one=True)
-                
-                
-                train_batches = list(DatasetUtils.generate_batch_iterator(dataset_train_part_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
-                validation_batches = list(DatasetUtils.generate_batch_iterator(dataset_val_part_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE))
-                
-                model_config = TransformerModelConfig("./model.pth", len(self.tokenizer.get_vocab()),
-                                                      len(self.tf_tokenizer_fit_on_dataset.word_index) + 1,
-                                                      self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                                      self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                                      self.max_length, Settings.TRANSFORMER_EMBED_SIZE,
-                                                      Settings.TRANSFORMER_NUM_LAYERS, Settings.TRANSFORMER_HEADS,
-                                                      "./go_term_to_index.pkl", self.tf_tokenizer_fit_on_dataset.word_index)
-                model_config.build()
-
-                transformer_utils.train(train_batches,
-                                        validation_batches,
-                                        len(self.tf_tokenizer_fit_on_dataset.word_index) - 1,
-                                        self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                        self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                        self.tf_tokenizer_pred.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                        self.tf_tokenizer_pred_reverse_word_index,
-                                        self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                        self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                        self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EMPTY_TOKEN.lower()],
-                                        self.tf_tokenizer_fit_on_dataset_reverse_word_index,
-                                        self.args.learning_rate,
-                                        Settings.TRANSFORMER_SRC_PAD_IDX,
-                                        Settings.TRANSFORMER_TRG_PAD_IDX,
-                                        model_config.src_vocab_size,
-                                        model_config.trg_vocab_size,
-                                        self.encoder_model,
-                                        model_config.embed_size,
-                                        self.args.epoch,
-                                        self.args.tensorboard_log_dir,
-                                        self.args.model_save_dir,
-                                        self.args.save_per_epoch,
-                                        None,
-                                        weights,
-                                        model_config)
-
-            elif self.args.model_type == Settings.GPT2_MODEL_TYPE:
-                n_train = self.dataset_manager.get_training_count(self.args.training_dataset_ratio)
-
-                if Settings.GPT2_USE_CUSTOM_WEIGHTS:
-                    weight_setter = WeightSetter(self.dataset, self.tf_tokenizer_fit_on_dataset, len(self.tf_tokenizer_fit_on_dataset.word_index) + 1, Settings.TRANSFORMER_TRG_PAD_IDX)
-                    weights = torch.tensor(weight_setter.get_weights()).to(self.args.device)
-                else:
-                    weights = None
-                
-                self.dataset_manager.shuffle()
-                self.dataset = self.dataset_manager.get_dataset()
-                
-                self.dataset_manager.split_train_val(self.dataset_manager.get_datapoint_count() - n_train)
-                train = self.dataset_manager.get_training_set()
-                val = self.dataset_manager.get_validation_set()
-
-                self._train_set = train
-                self._validation_set = val
-                
-                self._train_set_unwrapped = train
-                self._validation_set_unwrapped = val
-                
-                if self.dataset_manager.is_dataset_augmented():
-                    self._train_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(train)
-                    self._validation_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(val, pick_one=True)
-                
-                
-                self._close_validation_set = None
-                self._distant_validation_set = None
-                
-                self._close_validation_set_unwrapped = None
-                self._distant_validation_set_unwrapped = None
-                
-                if self.dataset_manager.is_distant_validation_set_split_available():
-                    self._close_validation_set = self.dataset_manager.get_close_validation_set()
-                    self._distant_validation_set = self.dataset_manager.get_distant_validation_set()
-                    
-                    self._close_validation_set_unwrapped = self._close_validation_set
-                    self._distant_validation_set_unwrapped = self._distant_validation_set
-                    
-                    if self.dataset_manager.is_dataset_augmented():
-                        self._close_validation_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(self._close_validation_set)
-                        self._distant_validation_set_unwrapped = DatasetUtils.unwrap_augmented_dataset(self._distant_validation_set)
-                    
-                
-                if self.args.save_training_set_to is not None and not os.path.exists(self.args.save_training_set_to):
-                    with open(self.args.save_training_set_to, "wb") as training_split_f:
-                        pickle.dump(train, training_split_f)
-
-                if self.args.save_test_set_to is not None and not os.path.exists(self.args.save_test_set_to):
-                    with open(self.args.save_test_set_to, "wb") as validation_split_f:
-                        pickle.dump(val, validation_split_f)
-                
-                train_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._train_set_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length, embedding_offset_lookup_table=self.embedding_offset_lookup_table))
-                validation_batches = list(GPT2DatasetUtils.generate_torch_dataset_compatible_dataset_iterator(self._validation_set_unwrapped, self.tokenizer, self.tf_tokenizer_fit_on_dataset, self.BATCH_SIZE, self.max_length, embedding_offset_lookup_table=self.embedding_offset_lookup_table))
-
-                if self.args.continue_from_checkpoint is not None:
-                    assert os.path.exists(self.args.continue_from_checkpoint)
-                    UniversalAccess.output.write(f"Checkpoint: {self.args.continue_from_checkpoint}")
-                    gpt2_lmhead_pretrained_config = GPT2Config.from_pretrained(self.args.continue_from_checkpoint)
-                    if self.encoder_type == EncoderType.CUSTOM_TRAINABLE:
-                        state_dict = torch.load(os.path.join(self.args.continue_from_checkpoint, "pytorch_model.bin"), map_location="cpu")
-                        self.encoder_model.load_state_dict(Utils.from_dict_fetch_only_starting_with(state_dict, "encoder.", remove_prefix=True), strict=True)
-                    model = GPT2LMHeadModel.from_pretrained(self.args.continue_from_checkpoint, config=gpt2_lmhead_pretrained_config).to(self.args.device)
-                    model.encoder = self.encoder_model
-                    if self.encoder_type == EncoderType.CUSTOM_TRAINABLE:
-                        assert model.encoder.embedding.weight.requires_grad
-                    self.model_for_inference = model
-                else:
-                    model_config = Gpt2LMHeadModelConfig(filepath="./model.pth",
-                                                     n_embd=Settings.TRANSFORMER_EMBED_SIZE,
-                                                     heads=4,
-                                                     vocab_size=len(self.tf_tokenizer_fit_on_dataset.word_index) + 1,
-                                                     n_positions=self.max_length,
-                                                     num_layers=1,
-                                                     sos_token=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
-                                                     eos_token=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
-                                                     go_term_to_index_filepath="./go_term_to_index.pkl",
-                                                     go_term_to_index=self.tf_tokenizer_fit_on_dataset.word_index)
-                    model_config.build()
-                    model = ModelNavigator.create(config=model_config, encoder_model=self.encoder_model, device=self.args.device)
-                    self.model_for_inference = model
-                
-                if self.args.go_term_index is not None:
-                    with open(self.args.go_term_index, "wb") as go_term_index_f:
-                        pickle.dump(self.tf_tokenizer_fit_on_dataset.word_index, go_term_index_f)
-                
-                metric_for_best_model = "validation_inference_token_based_f1" if not self.dataset_manager.is_dataset_augmented() else "validation_inference_token_based_f1_reg2go"
-                if self.dataset_manager.is_distant_validation_set_split_available():
-                    metric_for_best_model = "close_" + metric_for_best_model             
-                
-                UniversalAccess.output.write(f"metric_for_best_model={metric_for_best_model}")     
-
-                if self.args.device == 'cpu':
-                    training_args = TrainingArguments(
-                        run_name=self.args.run_name,
-                        output_dir=self.args.model_save_dir,
-                        overwrite_output_dir=False,
-                        evaluation_strategy="epoch",
-                        save_strategy="epoch",
-                        num_train_epochs=self.args.epoch,
-                        learning_rate=self.args.learning_rate,
-                        per_device_train_batch_size=self.BATCH_SIZE,
-                        per_device_eval_batch_size=self.args.eval_batch_size if self.args.eval_batch_size is not None else self.BATCH_SIZE,
-                        # TODO parameterize save_total_limit
-                        save_total_limit=10 + 1,
-                        disable_tqdm=True,
-                        logging_steps=10,
-                        dataloader_num_workers=10,
-                        fp16=False,
-                        ddp_find_unused_parameters=False,
-                        remove_unused_columns=False,
-                        eval_accumulation_steps=10,
-                        no_cuda=True,
-                        load_best_model_at_end=True,
-                        metric_for_best_model=metric_for_best_model,
-                        greater_is_better=True)
-                else:
-                    training_args = TrainingArguments(
-                        run_name=self.args.run_name,
-                        output_dir=self.args.model_save_dir,
-                        overwrite_output_dir=False,
-                        evaluation_strategy="epoch",
-                        save_strategy="epoch",
-                        num_train_epochs=self.args.epoch,
-                        learning_rate=self.args.learning_rate,
-                        per_device_train_batch_size=self.BATCH_SIZE,
-                        per_device_eval_batch_size=self.args.eval_batch_size if self.args.eval_batch_size is not None else self.BATCH_SIZE,
-                        # TODO parameterize save_total_limit
-                        save_total_limit=10 + 1,
-                        disable_tqdm=True,
-                        logging_steps=10,
-                        dataloader_num_workers=10,
-                        fp16=False,
-                        ddp_find_unused_parameters=False,
-                        remove_unused_columns=False,
-                        eval_accumulation_steps=10,
-                        load_best_model_at_end=True,
-                        metric_for_best_model=metric_for_best_model,
-                        greater_is_better=True)
-                
-                trainer = GPT2LMHeadTrainer(encoder_model=self.encoder_model.to(self.args.device) if self.encoder_model else self.encoder_model,
-                                            encoder_model_is_fixed=False if self.args.use_trainable_custom_encoder else True,
-                                            custom_weights=weights,
-                                            embeddings=None if not self.args.embedding_store else self.embeddings,
-                                            embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table,
-                                            device_from_args=self.args.device,
-                                            t5_tokenizer=self.tokenizer,
-                                            model=model.to(self.args.device),
-                                            args=training_args,
-                                            train_dataset=GPT2Dataset(train_batches),
-                                            eval_dataset=GPT2Dataset(validation_batches),
-                                            compute_metrics=self.compute_metrics,
-                                            data_collator=ZarrEmbeddingCollator(store_path=self.args.embedding_store, cache_bytes=2 * 1024**3),
-                                            preprocess_logits_for_metrics=self.preprocess_logits_for_metrics)
-                #try:
-                #    print(trainer.optimizer.state_dict())
-                #except Exception as se:
-                #    trainer.create_optimizer()
-                #    print(trainer.optimizer.state_dict())
-                
-                trainer.args._n_gpu = 1
-                if self.args.continue_from_checkpoint is not None:
-                    if trainer.optimizer is None:
-                        trainer.create_optimizer()
-                        print("created trainer optimizer", trainer.optimizer is not None)
-                    
-                    optimizer_state_dict = torch.load(os.path.join(self.args.continue_from_checkpoint, "optimizer.pt"))
-                    current_params = sum(len(g["params"]) for g in trainer.optimizer.param_groups)
-                    saved_params = sum(len(g["params"]) for g in optimizer_state_dict["param_groups"])
-                    print(f"current_params: {current_params}, saved_params: {saved_params}")
-                    assert current_params == saved_params
-                    trainer.optimizer.load_state_dict(optimizer_state_dict)
-                    print("loaded optimizer")
-                    #trainer.create_optimizer()
-
-
-
-                    with open(os.path.join(self.args.continue_from_checkpoint, "trainer_state.json")) as f:
-                        trainer_state_dict = json.loads(f.read())
-                    
-                    max_steps = trainer_state_dict["max_steps"]
-                    
-                    if trainer.lr_scheduler is None:
-                        trainer.create_scheduler(num_training_steps=max_steps)
-                        print("created trainer scheduler", trainer.lr_scheduler is not None)
-
-                    trainer.lr_scheduler.load_state_dict(torch.load(os.path.join(self.args.continue_from_checkpoint, "scheduler.pt")))
-                    print("loaded scheduler")
-                    
-
-                trainer.train()
+            self.__run_training(dataset_converted=dataset_converted, dataset_converter=dataset_converter, transformer_utils=transformer_utils)
     
     def truncate_padding(self, pred, label, pad_idx):
         if len(label) < 1 or label[0] == pad_idx:
@@ -919,131 +929,3 @@ class Driver:
         config_filepath = os.path.join(folder_path, Settings.CONFIG_FILENAME)
         json_config_loader = JSONConfigLoader(config_filepath)
         return json_config_loader.config[key]
-    
-    def produce_merged_prediction_output(self, classification_predictions, transformer_predictions,
-                                                classification_model_go_term_to_index,
-                                                classification_model_reverse_go_term_to_index,
-                                                transformer_model_go_term_to_index,
-                                                transformer_model_reverse_go_term_to_index,
-                                                transformer_utils: TransformerUtils):
-        for idx in range(len(classification_predictions)):
-            protein_sequence = self.dataset[idx][0].replace(" ", "")
-            
-            classification_prediction = classification_predictions[idx]
-            transformer_prediction = transformer_predictions[idx]
-            
-            merged_predictions_str = self.merge_predictions(classification_prediction, transformer_prediction,
-                classification_model_go_term_to_index,
-                classification_model_reverse_go_term_to_index,
-                transformer_model_go_term_to_index,
-                transformer_model_reverse_go_term_to_index,
-                transformer_utils)
-            
-            UniversalAccess.output.write(f"{protein_sequence}: {merged_predictions_str}")
-    
-    def evaluate_merged_mode_prediction(self,
-                                        classification_predictions,
-                                        transformer_predictions,
-                                        classification_model_go_term_to_index,
-                                        classification_model_reverse_go_term_to_index,
-                                        transformer_model_go_term_to_index,
-                                        transformer_model_reverse_go_term_to_index):
-        metrics = {"precision": 0, "recall": 0, "f1": 0}
-        for idx in range(len(classification_predictions)):
-            protein_sequence = self.dataset[idx][0].replace(" ", "")
-            
-            classification_prediction = classification_predictions[idx]
-            transformer_prediction = transformer_predictions[idx]
-            
-            merged_prediction = set()
-            
-            for predicted_token in classification_prediction:
-                merged_prediction.add(classification_model_reverse_go_term_to_index[predicted_token].upper())
-            
-            for predicted_token in transformer_prediction:
-                if predicted_token != Settings.TRANSFORMER_EMPTY_TOKEN:
-                    merged_prediction.add(transformer_model_reverse_go_term_to_index[predicted_token].upper())
-            
-            merged_prediction = list(merged_prediction)
-
-            groundtruth_tokens = self.dataset[idx][1].split()[1:-1] # exclude <sos> and <eos> tokens at the beginning and the end
-            fp, tp, fn, tn = Utils.get_fp_tp_fn_tn(groundtruth_tokens,
-                                                   merged_prediction,
-                                                   0,
-                                                   pred_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper(),
-                                                   true_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper())
-            precision_score, recall_score = Utils.precision(tp, fp), Utils.recall(tp, fn)
-            f1_score = Utils.f1(precision_score, recall_score)
-            
-            metrics["precision"] += precision_score
-            metrics["recall"] += recall_score
-            metrics["f1"] += f1_score
-        
-        metrics["precision"] = metrics["precision"] / len(classification_predictions)
-        metrics["recall"] = metrics["recall"] / len(classification_predictions)
-        metrics["f1"] = metrics["f1"] / len(classification_predictions)
-        
-        return metrics
-    
-    def evaluate_classification_head_predictions(self,
-                                                 classification_predictions,
-                                                 classification_model_go_term_to_index,
-                                                 classification_model_reverse_go_term_to_index):
-        metrics = {"precision": 0, "recall": 0, "f1": 0}
-        for idx in range(len(classification_predictions)):
-            protein_sequence = self.dataset[idx][0].replace(" ", "")
-            
-            classification_prediction = classification_predictions[idx]
-            
-            merged_prediction = set()
-            
-            for predicted_token in classification_prediction:
-                merged_prediction.add(classification_model_reverse_go_term_to_index[predicted_token].upper())
-
-            merged_prediction = list(merged_prediction)
-
-            groundtruth_tokens = self.dataset[idx][1].split()[1:-1] # exclude <sos> and <eos> tokens at the beginning and the end
-            fp, tp, fn, tn = Utils.get_fp_tp_fn_tn(groundtruth_tokens,
-                                                   merged_prediction,
-                                                   0,
-                                                   true_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper(),
-                                                   pred_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper())
-            precision_score, recall_score = Utils.precision(tp, fp), Utils.recall(tp, fn)
-            f1_score = Utils.f1(precision_score, recall_score)
-            
-            metrics["precision"] += precision_score
-            metrics["recall"] += recall_score
-            metrics["f1"] += f1_score
-    
-        metrics["precision"] = metrics["precision"] / len(classification_predictions)
-        metrics["recall"] = metrics["recall"] / len(classification_predictions)
-        metrics["f1"] = metrics["f1"] / len(classification_predictions)
-        
-        return metrics
-
-    def merge_predictions(self, classification_prediction, transformer_prediction,
-                          classification_model_go_term_to_index,
-                          classification_model_reverse_go_term_to_index,
-                          transformer_model_go_term_to_index,
-                          transformer_model_reverse_go_term_to_index,
-                          transformer_utils: TransformerUtils):
-        transformer_prediction_unique = list(set(transformer_prediction))
-        transformer_prediction_unique_str_list = Utils.convert_tokens_to_str_go_terms(
-            transformer_model_reverse_go_term_to_index, transformer_prediction_unique)
-        
-        classification_prediction_str_list = Utils.convert_tokens_to_str_go_terms(
-            classification_model_reverse_go_term_to_index, classification_prediction)
-
-        merged_str_list = list(set(transformer_prediction_unique_str_list + classification_prediction_str_list))
-        
-        string_io = StringIO()
-        string_io.write(" ".join(merged_str_list) + ": ")
-        
-        string_io.write(
-            transformer_utils.post_process_prediction_as_str(
-                transformer_utils.post_process_prediction(self.model, transformer_prediction,
-                                                      self.model.get_config().go_term_to_index.get(Settings.TRANSFORMER_EMPTY_TOKEN.lower(), None))
-            )
-        )
-        
-        return string_io.getvalue()
