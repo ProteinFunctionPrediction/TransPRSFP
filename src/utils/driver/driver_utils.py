@@ -1,4 +1,10 @@
+from io import StringIO
+
+from universal.access.universal_access import UniversalAccess
+from universal.settings.settings import Settings
 from utils.model.transformer.transformer_utils import TransformerUtils
+from utils.utils import Utils
+
 
 class DriverUtils:
     @staticmethod
@@ -31,6 +37,7 @@ class DriverUtils:
 
         return string_io.getvalue()
 
+    @staticmethod
     def produce_merged_prediction_output(driver, classification_predictions, transformer_predictions,
                                                 classification_model_go_term_to_index,
                                                 classification_model_reverse_go_term_to_index,
@@ -53,6 +60,8 @@ class DriverUtils:
             
             UniversalAccess.output.write(f"{protein_sequence}: {merged_predictions_str}")
     
+
+    @staticmethod
     def evaluate_merged_mode_prediction(driver,
                                         classification_predictions,
                                         transformer_predictions,

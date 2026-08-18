@@ -1,4 +1,9 @@
 import torch
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+import numpy as np
+from universal.settings.settings import Settings
+from utils.utils import Utils
+
 
 class DatasetUtils:
     @staticmethod
@@ -16,11 +21,11 @@ class DatasetUtils:
                                                                     truncation=True)
             
             tokenized_sequences = batch_encode_plus_output["input_ids"]
-            tokenized_sequences_attention_mask = batch_encode_plus_output["attention_mask"]
-
+            tokenized_sequences_attention_mask = np.asarray(batch_encode_plus_output["attention_mask"])
             batch_go_term_sequences = batch[:, 1]
             if target_tokenizer is not None:
                 tokenized_go_terms = pad_sequences(target_tokenizer.texts_to_sequences(batch_go_term_sequences), padding='post', maxlen=maxlen, truncating='post')
+                #print("USING TARGET_TOKENIZER")
             else:
                 tokenized_go_terms = []
                 for i in range(batch.shape[0]):
@@ -50,29 +55,33 @@ class DatasetUtils:
 
     @staticmethod
     def construct_residue_labels(go_input_ids, prot_attention_mask, ignore_index=-100):
-        batch_size, sequence_length = prot_attention_mask.shape
+        go_input_ids = torch.tensor(np.asarray(go_input_ids))
+        prot_attention_mask = torch.tensor(np.asarray(prot_attention_mask))
+
+        assert go_input_ids.ndim == 1, f"Unexpected ndim for go_input_ids: {go_input_ids.shape}"
+        assert prot_attention_mask.ndim == 1, f"Unexpected ndim for prot_attention_mask: {prot_attention_mask.shape}"
+
+        sequence_length = prot_attention_mask.shape[0]
         labels = torch.full(
-            (batch_size, sequence_length),
+            (sequence_length,),
             fill_value=ignore_index,
-            dtype=torch.long,
-            device=go_input_ids.device,
+            dtype=torch.long
         )
 
         # remove SOS (GO side)
-        shifted_labels = go_input_ids[:, 1:]
-        copy_length = min(sequence_length, shifted_labels.shape[1])
+        shifted_labels = go_input_ids[1:]
+        copy_length = min(sequence_length, shifted_labels.shape[0])
 
-        labels[:, :copy_length] = shifted_labels[:, :copy_length]
+        labels[:copy_length] = shifted_labels[:copy_length]
 
         # -1 -> remove EOS
-        residue_lengths = prot_attention_mask.sum(dim=1).long() - 1
+        residue_length = prot_attention_mask.sum(dim=-1).long() - 1
+        positions = torch.arange(sequence_length)
 
+        residue_attention_mask = positions < residue_length
         #residue_lengths = residue_lengths.clamp(min=0, max=sequence_length)
-        positions = torch.arange(sequence_length, device=go_input_ids.device).unsqueeze(0)
 
-        residue_attention_mask = positions < residue_lengths.unsquueze(1)
 
         # EOS is also removed at the GO side now
         labels = labels.masked_fill(~residue_attention_mask, ignore_index)
-
         return labels

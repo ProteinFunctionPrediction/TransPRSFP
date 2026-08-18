@@ -263,7 +263,7 @@ class DatasetManager:
         if idx is None:
             return set([prot_id])
 
-        equivalency_set = equivalent_prot_id_list[idx]
+        equivalency_set = self.__equivalent_prot_id_list[idx]
         assert prot_id in equivalency_set
         
         return equivalency_set            

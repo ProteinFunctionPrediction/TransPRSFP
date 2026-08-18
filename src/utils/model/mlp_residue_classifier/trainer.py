@@ -1,6 +1,5 @@
 import torch
 from transformers import Trainer
-from utils.dataset.mlp_residue_classifier.dataset_utils import DatasetUtils as MLPResidueClassifierDatasetUtils
 
 class MLPResidueClassifierTrainer(Trainer):
     def __init__(self, encoder_model=None, encoder_model_is_fixed=True, *args, **kwargs):

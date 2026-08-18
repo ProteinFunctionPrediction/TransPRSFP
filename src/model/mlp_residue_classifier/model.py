@@ -6,13 +6,14 @@ from transformers.modeling_outputs import TokenClassifierOutput
 from model.model import Model
 
 class MLPResidueClassifier(nn.Module, Model):
-    def __init__(self, num_labels, input_size=1024, hidden_sizes=(512,), dropout=0.1, ignore_index=-100):
+    def __init__(self, num_labels, input_size=1024, hidden_sizes=(512,), dropout=0.1, ignore_index=-100, encoder_model=None):
         nn.Module.__init__(self)
         Model.__init__(self)
 
+        self.encoder = encoder_model
         self.num_labels = num_labels
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.hidden_sizes = hidden_sizes
         self.ignore_index = ignore_index
 
         layers = [nn.LayerNorm(input_size)]
