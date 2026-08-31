@@ -1,7 +1,10 @@
+from typing import Optional
+
 from transformers import Trainer
 import torch
 from utils.utils import Utils
 import numpy as np
+from transformers.trainer_pt_utils import LengthGroupedSampler
 
 class GPT2LMHeadTrainer(Trainer):
     def __init__(self, encoder_model=None, encoder_model_is_fixed=True, custom_weights=None, embeddings=None, embedding_offset_lookup_table=None, device_from_args=None, t5_tokenizer=None, *args, **kwargs):
@@ -14,6 +17,13 @@ class GPT2LMHeadTrainer(Trainer):
         self.__device = device_from_args
         self.__t5_tokenizer = t5_tokenizer
 
+    def _get_train_sampler(self):
+        if self.args.group_by_length:
+            lengths = [int(torch.as_tensor(x["prot_attention_mask"]).sum().item()) for x in self.train_dataset.data]
+            return LengthGroupedSampler(batch_size=self.args.train_batch_size * self.args.gradient_accumulation_steps, lengths=lengths)
+
+        return super()._get_train_sampler()
+
     def compute_loss(self, model, inputs, return_outputs=False):
         input_sequence = inputs["go_input_ids"]
         if self.encoder_model:
@@ -25,7 +35,7 @@ class GPT2LMHeadTrainer(Trainer):
         else:
             last_hidden_state = inputs["last_hidden_states"]
 
-        outputs = model(input_ids=input_sequence, encoder_hidden_states=last_hidden_state, labels=input_sequence)
+        outputs = model(input_ids=input_sequence, encoder_hidden_states=last_hidden_state, encoder_attention_mask=inputs["prot_attention_mask"], labels=input_sequence)
         if self.custom_weights is None:
             return (outputs.loss, outputs) if return_outputs else outputs.loss
         else:

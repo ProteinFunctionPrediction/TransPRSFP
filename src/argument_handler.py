@@ -43,7 +43,7 @@ class ArgumentHandler:
         group.add_argument('-stst', '--save-training-set-to', type=str, required=False, help='the path to save the training set. The specified path must be non-existent. This option can only be used in training mode')
         group.add_argument('-stest', '--save-test-set-to', type=str, required=False, help='the path to save the test set. The specified path must be non-existent. This option can only be used in training mode')
         group.add_argument('-dlr2g', '--dataset-like-region2go', type=str, required=False, help='the path to a dataset-like region2go map file', default='')
-        group.add_argument('-slt', '--save-probs-to', type=str, required=False, help='the path to save the probabilities. The specified path must be non-existent. This option is available only in inference mode')
+        group.add_argument('-spt', '--save-probs-to', type=str, required=False, help='the path to save the probabilities. The specified path must be non-existent. This option is available only in inference mode')
         group.add_argument('-kt', '--keep-top', type=int, required=False, help='only a predefined number of largest probabilities will be kept. This option defaults to 5', default=5)
         group.add_argument('-cmp', '--cluster-mapping-path', type=str, required=False, help='path to cluster mapping file that stores mappings\nfrom protein IDs to sets consisting of cluster IDs of the corresponding protein\n(must be a pickle-saved binary file).\nUsed for splitting the validation dataset into two as\n - those where the protein has no any corresponding protein in its cluster in the training set and\n - those where the protein has at least one corresponding protein in its cluster in the training set.\nIf this parameter is specified, --prot-seq-to-prot-id-index-path parameter must also be specified')
         group.add_argument('-stiip', '--prot-seq-to-prot-id-index-path', type=str, required=False, help='path to the mapping file that stores mappings\nfrom protein sequences (format: U,Z,O, and B amino acids are transformed to X, and there is one space between each of two consecutive amino acids)\nto protein IDs (must be a pickle-saved binary file).\nUsed for splitting the validation dataset into two as\n - those where the protein has no any corresponding protein in its cluster in the training set and\n - those where the protein has at least one corresponding protein in its cluster in the training set.\nIf this parameter is specified, --cluster-mapping-path parameter must also be specified')
@@ -56,13 +56,14 @@ class ArgumentHandler:
         group.add_argument('-ebs', '--eval-batch-size', help='Batch size to be used in evaluation. If not specified, the same number as the batch size is to be used by default', type=int, required=False)
         group.add_argument('-embs', '--embedding-store', help='Path to a pre-computed embedding store. This speeds up training by bypassing the need for an encoder', type=str, required=False)
         group.add_argument('-embolt', '--embedding-offset-lookup-table', help='Path to a pickle-saved binary file that contains sha256-offset mappings for the embedding store', type=str, required=False)
+        group.add_argument('-embssc', '--embedding-store-sanity-check', action='store_true', default=False, required=False)
         self.args = self.parser.parse_args()
         
         self._validate()
     
     def _validate(self):
-        if self.args.embedding_store is not None and self.args.prot_t5_model_path is not None:
-            self._show_help_and_raise_error("--embedding-store and --prot-t5-model-path arguments cannot be used at the same time")
+        if not self.args.embedding_store_sanity_check and (self.args.embedding_store is not None and self.args.prot_t5_model_path is not None):
+            self._show_help_and_raise_error("--embedding-store and --prot-t5-model-path arguments cannot be used at the same time unless --embedding-store-sanity-check is provided")
     
         if self.args.embedding_offset_lookup_table is not None and self.args.embedding_store is None:
             self._show_help_and_raise_error('--embedding-offset-lookup-table can be used only when --embedding-store is also used')

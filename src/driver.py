@@ -193,6 +193,10 @@ class Driver:
                         i.requires_grad = False
                 else:
                     self.encoder_model = None
+                    # TODO sanity check is not complete
+                    if self.args.embedding_store_sanity_check:
+                        self.encoder_model = T5EncoderModel.from_pretrained(self.args.prot_t5_model_path)
+                        self.encoder_model.eval()
                     self.encoder_type = EncoderType.NO_ENCODER
                     UniversalAccess.output.write("Loading pre-computed embedding store...")
                     embedding_store = NestedDirectoryStore(self.args.embedding_store)
@@ -610,7 +614,7 @@ class Driver:
                                                         n_embd=Settings.TRANSFORMER_EMBED_SIZE,
                                                         heads=4,
                                                         vocab_size=len(self.tf_tokenizer_fit_on_dataset.word_index) + 1,
-                                                        n_positions=self.max_length,
+                                                        n_positions=self.max_length + 2,
                                                         num_layers=1,
                                                         sos_token=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_SOS_TOKEN],
                                                         eos_token=self.tf_tokenizer_fit_on_dataset.word_index[Settings.TRANSFORMER_EOS_TOKEN],
@@ -654,6 +658,7 @@ class Driver:
                 'load_best_model_at_end': True,
                 'metric_for_best_model': metric_for_best_model,
                 'greater_is_better': True,
+                'group_by_length': True,
             }
 
             if self.args.device == 'cpu':
@@ -662,7 +667,7 @@ class Driver:
             training_args = TrainingArguments(**training_args_dict)
 
             if self.args.embedding_store:
-                selected_data_collator = ZarrEmbeddingCollator(store_path=self.args.embedding_store, cache_bytes=2 * 1024**3)
+                selected_data_collator = ZarrEmbeddingCollator(store_path=self.args.embedding_store, cache_bytes=None)
             else:
                 selected_data_collator = self.collate_fn
 

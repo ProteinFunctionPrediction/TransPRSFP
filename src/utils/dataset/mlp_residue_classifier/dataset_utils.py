@@ -17,8 +17,8 @@ class DatasetUtils:
                                                                     batch_protein_sequences,\
                                                                     add_special_tokens=True,\
                                                                     padding="max_length",
-                                                                    max_length=maxlen,
-                                                                    truncation=True)
+                                                                    max_length=maxlen + 1,
+                                                                    truncation=False)
             
             tokenized_sequences = batch_encode_plus_output["input_ids"]
             tokenized_sequences_attention_mask = np.asarray(batch_encode_plus_output["attention_mask"])

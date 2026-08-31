@@ -4,10 +4,10 @@ from torch.utils.data import Dataset
 
 class GPT2Dataset(Dataset):
     def __init__(self, data):
-        self.data = data
+        self.data = [{key: torch.tensor(value) for key, value in item.items() if key != "prot_sequence"} for item in data]
     
     def __len__(self):
         return len(self.data)
     
     def __getitem__(self, idx):
-        return {key: torch.tensor(value) for key, value in self.data[idx].items() if key != "prot_sequence"}
+        return self.data[idx]

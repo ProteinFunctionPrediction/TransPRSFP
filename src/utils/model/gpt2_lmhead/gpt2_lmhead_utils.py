@@ -29,33 +29,45 @@ class GPT2LMHeadUtils(ResidueClassifierUtils):
                                                        embeddings,
                                                        embedding_offset,
                                                        embedding_length)
-        y_input = torch.tensor([SOS_token], dtype=torch.long, device=self.device)
+
+        encoder_attention_mask = input_attention_mask[:, :last_hidden_state.shape[1]]
+        current_input = torch.tensor([SOS_token], dtype=torch.long, device=self.device)
         
         probs = None
         if return_probs:
             probs = []
 
-        
+        past_key_values = None
+        prediction = []
 
-        for _ in range(max_length):
-            encoder_attention_mask = input_attention_mask[:, :last_hidden_state.shape[1]]
-            pred = model(input_ids=y_input, encoder_hidden_states=last_hidden_state, encoder_attention_mask=encoder_attention_mask)
-            next_token_logits = pred.logits[-1, :]
-            next_token_logits[SOS_token] = -1e20
-            next_token_logits[EOS_token] = -1e20
-            next_token_logits[Settings.TRANSFORMER_TRG_PAD_IDX] = -1e20
-            next_token = torch.argmax(next_token_logits, dim=-1).unsqueeze(-1)
-            if return_probs:
-                softmax = torch.nn.Softmax()
-                next_token_probs = softmax(next_token_logits)
-                topk_values, topk_indices = torch.topk(next_token_probs, k=keep_top)
-                topk_values = topk_values.cpu().numpy()
-                topk_indices = topk_indices.cpu().numpy()
-                probs.append((topk_values, topk_indices))
 
-            y_input = torch.cat((y_input, next_token), dim=-1)
-        
+
+        with torch.inference_mode():
+            for _ in range(max_length):
+                pred = model(input_ids=current_input,
+                             past_key_values=past_key_values,
+                             use_cache=True,
+                             encoder_hidden_states=last_hidden_state,
+                             encoder_attention_mask=encoder_attention_mask)
+                next_token_logits = pred.logits[-1, :]
+                next_token_logits[SOS_token] = -1e20
+                next_token_logits[EOS_token] = -1e20
+                next_token_logits[Settings.TRANSFORMER_TRG_PAD_IDX] = -1e20
+                next_token = torch.argmax(next_token_logits, dim=-1)
+
+                prediction.append(int(next_token.item()))
+
+                if return_probs:
+                    next_token_probs = torch.softmax(next_token_logits)
+                    topk_values, topk_indices = torch.topk(next_token_probs, k=keep_top)
+                    topk_values = topk_values.cpu().numpy()
+                    topk_indices = topk_indices.cpu().numpy()
+                    probs.append((topk_values, topk_indices))
+
+                current_input = next_token.unsqueeze(-1)
+                past_key_values = pred.past_key_values
+
         if return_probs:
-            return [i for i in y_input.view(-1).tolist()][1:], probs
+            return prediction, probs
         else:
-            return [i for i in y_input.view(-1).tolist()][1:]
+            return prediction

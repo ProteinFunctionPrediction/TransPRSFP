@@ -60,8 +60,8 @@ class DatasetUtils:
                                                                     batch_protein_sequences,\
                                                                     add_special_tokens=True,\
                                                                     padding="max_length",
-                                                                    max_length=maxlen,
-                                                                    truncation=True)
+                                                                    max_length=maxlen + 1,
+                                                                    truncation=False)
 
             tokenized_sequences = batch_encode_plus_output["input_ids"]
             tokenized_sequences_attention_mask = batch_encode_plus_output["attention_mask"]
@@ -71,7 +71,7 @@ class DatasetUtils:
 
             batch_go_term_sequences = batch[:, 1]
             if target_tokenizer is not None:
-                tokenized_go_terms = pad_sequences(target_tokenizer.texts_to_sequences(batch_go_term_sequences), padding='post', maxlen=maxlen, truncating='post')
+                tokenized_go_terms = pad_sequences(target_tokenizer.texts_to_sequences(batch_go_term_sequences), padding='post', maxlen=maxlen + 2, truncating='post')
             else:
                 tokenized_go_terms = []
                 for i in range(batch.shape[0]):
