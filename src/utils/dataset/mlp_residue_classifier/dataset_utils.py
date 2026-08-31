@@ -18,13 +18,13 @@ class DatasetUtils:
                                                                     add_special_tokens=True,\
                                                                     padding="max_length",
                                                                     max_length=maxlen + 1,
-                                                                    truncation=False)
+                                                                    truncation=True)
             
             tokenized_sequences = batch_encode_plus_output["input_ids"]
             tokenized_sequences_attention_mask = np.asarray(batch_encode_plus_output["attention_mask"])
             batch_go_term_sequences = batch[:, 1]
             if target_tokenizer is not None:
-                tokenized_go_terms = pad_sequences(target_tokenizer.texts_to_sequences(batch_go_term_sequences), padding='post', maxlen=maxlen, truncating='post')
+                tokenized_go_terms = pad_sequences(target_tokenizer.texts_to_sequences(batch_go_term_sequences), padding='post', maxlen=maxlen + 2, truncating='post')
                 #print("USING TARGET_TOKENIZER")
             else:
                 tokenized_go_terms = []

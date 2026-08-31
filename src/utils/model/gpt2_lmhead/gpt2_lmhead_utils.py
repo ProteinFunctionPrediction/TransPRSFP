@@ -58,7 +58,7 @@ class GPT2LMHeadUtils(ResidueClassifierUtils):
                 prediction.append(int(next_token.item()))
 
                 if return_probs:
-                    next_token_probs = torch.softmax(next_token_logits)
+                    next_token_probs = torch.softmax(next_token_logits, dim=-1)
                     topk_values, topk_indices = torch.topk(next_token_probs, k=keep_top)
                     topk_values = topk_values.cpu().numpy()
                     topk_indices = topk_indices.cpu().numpy()

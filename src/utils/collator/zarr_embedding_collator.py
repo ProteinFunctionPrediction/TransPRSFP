@@ -42,6 +42,9 @@ class ZarrEmbeddingCollator:
         src_length = int(batch["prot_attention_mask"].sum(dim=1).max().item())
         tgt_length = int((batch["go_input_ids"] != Settings.TRANSFORMER_TRG_PAD_IDX).sum(dim=1).max().item())
 
+        if "labels" in batch:
+            batch["labels"] = batch["labels"][:, :src_length]
+
         batch["prot_input_ids"] = batch["prot_input_ids"][:, :src_length]
         batch["prot_attention_mask"] = batch["prot_attention_mask"][:, :src_length]
 
