@@ -40,6 +40,9 @@ class GPT2LMHeadUtils(ResidueClassifierUtils):
         past_key_values = None
         prediction = []
 
+        if return_probs:
+            topk_values_list = []
+            topk_indices_list = []
 
 
         with torch.inference_mode():
@@ -55,19 +58,23 @@ class GPT2LMHeadUtils(ResidueClassifierUtils):
                 next_token_logits[Settings.TRANSFORMER_TRG_PAD_IDX] = -1e20
                 next_token = torch.argmax(next_token_logits, dim=-1)
 
-                prediction.append(int(next_token.item()))
+                prediction.append(next_token)
 
                 if return_probs:
                     next_token_probs = torch.softmax(next_token_logits, dim=-1)
                     topk_values, topk_indices = torch.topk(next_token_probs, k=keep_top)
-                    topk_values = topk_values.cpu().numpy()
-                    topk_indices = topk_indices.cpu().numpy()
-                    probs.append((topk_values, topk_indices))
+                    topk_values_list.append(topk_values)
+                    topk_indices_list.append(topk_indices)
 
                 current_input = next_token.unsqueeze(-1)
                 past_key_values = pred.past_key_values
 
+        prediction = torch.stack(prediction).cpu().tolist()
+
+        topk_values = torch.stack(topk_values_list).cpu().numpy()
+        topk_indices = torch.stack(topk_indices_list).cpu().numpy()
+
         if return_probs:
-            return prediction, probs
+            return prediction, zip(topk_values, topk_indices)
         else:
             return prediction
