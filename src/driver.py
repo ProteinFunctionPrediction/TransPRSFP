@@ -261,7 +261,7 @@ class Driver:
         elif self.args.inference and self.args.model_type == Settings.MLP_RESIDUE_CLASSIFIER_MODEL_TYPE:
             UniversalAccess.output.write(f"Loading ")
             self.model = MLPResidueClassifier(num_labels=self.dataset_manager.get_go_term_count() + 3 + 1).to(self.args.device)
-            self.model = self.__load_state_dict_into_model(model_path=self.args.continue_from_checkpoint, model=self.model, device=self.args.device)
+            self.model = self.__load_state_dict_into_model(model_path=self.args.model_path, model=self.model, device=self.args.device)
             self.model_go_term_index = self.loaded_go_term_index
             self.reverse_model_go_term_index = Utils.build_reverse_index(self.model_go_term_index)
             if self.encoder_type == EncoderType.CUSTOM_TRAINABLE:

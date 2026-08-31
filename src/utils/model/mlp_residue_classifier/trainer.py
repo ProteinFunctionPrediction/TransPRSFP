@@ -21,6 +21,7 @@ class MLPResidueClassifierTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False):
         if self.encoder_model:
             if self.encoder_model_is_fixed:
+                self.encoder_model.eval()
                 with torch.no_grad():
                     last_hidden_state = self.encoder_model(input_ids=inputs["prot_input_ids"], attention_mask=inputs["prot_attention_mask"]).last_hidden_state
             else:
