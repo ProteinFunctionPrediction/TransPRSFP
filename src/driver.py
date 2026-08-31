@@ -847,6 +847,10 @@ class Driver:
         for i in range(len(predictions)):
             pred = predictions[i]
             label = labels[i]
+
+            if self.args.model_type == Settings.GPT2_MODEL_TYPE:
+                pred = pred[:-1]
+                label = label[1:]
             
             pred, label = self.truncate_padding(pred, label, Settings.TRANSFORMER_TRG_PAD_IDX)
 
