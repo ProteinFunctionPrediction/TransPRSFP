@@ -158,7 +158,7 @@ class ResidueClassifierUtils(ModelUtils, ABC):
                                   'EOS_token': pred_EOS_token_id,
                                   'EMPTY_token': pred_EMPTY_token_id,
                                   'OOV_token': pred_OOV_token_id,
-                                  'max_length': (sample_X_attention_mask == 1).sum().detach().cpu().numpy() - 1,
+                                  'max_length': int(sample_X_attention_mask.sum().item()) - 1,
                                   'return_probs': return_probs,
                                   'keep_top': keep_top}
 
