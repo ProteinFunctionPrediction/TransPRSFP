@@ -71,10 +71,9 @@ class GPT2LMHeadUtils(ResidueClassifierUtils):
 
         prediction = torch.stack(prediction).cpu().tolist()
 
-        topk_values = torch.stack(topk_values_list).cpu().numpy()
-        topk_indices = torch.stack(topk_indices_list).cpu().numpy()
-
         if return_probs:
+            topk_values = torch.stack(topk_values_list).cpu().numpy()
+            topk_indices = torch.stack(topk_indices_list).cpu().numpy()
             return prediction, zip(topk_values, topk_indices)
         else:
             return prediction
