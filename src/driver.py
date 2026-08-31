@@ -624,7 +624,7 @@ class Driver:
                     model_config.build()
                     model = ModelNavigator.create(config=model_config, encoder_model=self.encoder_model, device=self.args.device)
                 else:
-                    model = MLPResidueClassifier(num_labels=self.dataset_manager.get_go_term_count() + 3 + 1).to(self.args.device)
+                    model = MLPResidueClassifier(num_labels=self.dataset_manager.get_go_term_count() + 3 + 1, encoder_model=self.encoder_model).to(self.args.device)
                 self.model_for_inference = model
             
             if self.args.go_term_index is not None:
