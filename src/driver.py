@@ -74,6 +74,8 @@ class Driver:
         self.total_go_term_count = None
         self.loaded_go_term_index = None
         self.reverse_loaded_go_term_index = None
+        self.gpt2_lmhead_utils = None
+        self.mlp_residue_classifier_utils = None
         self.go_term_metrics_filepath_prefix = self.args.go_term_metrics_filepath_prefix
         if self.go_term_metrics_filepath_prefix == '' or self.go_term_metrics_filepath_prefix is None:
             self.go_term_metrics_filepath_prefix = Utils.generate_random_str(length=32, use_timestamp=True)
@@ -95,16 +97,6 @@ class Driver:
         self.reverse_model_go_term_index = None
         
         self.return_probs = self.args.save_probs_to is not None
-
-    def collate_fn(self, d):
-        # we probably don't need this anymore. can probably remove it, and all its uses, completely
-        prot_seqs = [i["prot_sequence"] for i in d]
-
-        seqs_excluded = [{k: v for k, v in i.items() if k != "prot_sequence"} for i in d]
-
-        batch = default_data_collator(seqs_excluded)
-        batch["prot_sequence"] = prot_seqs
-        return batch
 
     def preprocess_logits_for_metrics(self, logits, labels):
         if isinstance(logits, tuple):
@@ -260,9 +252,9 @@ class Driver:
                 self.tf_tokenizer_pred_reverse_word_index = Utils.build_reverse_index(self.tf_tokenizer_pred.word_index)
         elif self.args.inference and self.args.model_type == Settings.MLP_RESIDUE_CLASSIFIER_MODEL_TYPE:
             UniversalAccess.output.write(f"Loading ")
-            self.model = MLPResidueClassifier(num_labels=self.dataset_manager.get_go_term_count() + 3 + 1).to(self.args.device)
-            self.model = self.__load_state_dict_into_model(model_path=self.args.model_path, model=self.model, device=self.args.device)
             self.model_go_term_index = self.loaded_go_term_index
+            self.model = MLPResidueClassifier(num_labels=len(self.model_go_term_index) + 1).to(self.args.device)
+            self.model = self.__load_state_dict_into_model(model_path=self.args.model_path, model=self.model, device=self.args.device)
             self.reverse_model_go_term_index = Utils.build_reverse_index(self.model_go_term_index)
             if self.encoder_type == EncoderType.CUSTOM_TRAINABLE:
                 self.__load_custom_trainable_encoder_model_weights(model_path=self.args.model_path, encoder_model=self.encoder_model)
@@ -354,8 +346,8 @@ class Driver:
                                      'keep_top': self.args.keep_top,
                                      'embeddings': None if not self.args.embedding_store else self.embeddings,
                                      'embedding_offset_lookup_table': None if not self.args.embedding_store else self.embedding_offset_lookup_table}
-            __selector_dict = {Settings.GPT2_MODEL_TYPE: self.gpt2_lmhead_utils.run_prediction,
-                               Settings.MLP_RESIDUE_CLASSIFIER_MODEL_TYPE: self.mlp_residue_classifier_utils.run_prediction}
+            __selector_dict = {Settings.GPT2_MODEL_TYPE: self.gpt2_lmhead_utils.run_prediction if self.gpt2_lmhead_utils is not None else None,
+                               Settings.MLP_RESIDUE_CLASSIFIER_MODEL_TYPE: self.mlp_residue_classifier_utils.run_prediction if self.mlp_residue_classifier_utils is not None else None}
             __selected_run_prediction_fn = __selector_dict[self.args.model_type]
             if self.return_probs:
                 # TODO selector here
@@ -670,7 +662,7 @@ class Driver:
             if self.args.embedding_store:
                 selected_data_collator = ZarrEmbeddingCollator(store_path=self.args.embedding_store, cache_bytes=None)
             else:
-                selected_data_collator = self.collate_fn
+                selected_data_collator = default_data_collator
 
             if self.args.model_type == Settings.GPT2_MODEL_TYPE:
                 gpt2_lm_head_trainer_args_dict = {'encoder_model': self.encoder_model.to(self.args.device) if self.encoder_model else self.encoder_model,
@@ -747,7 +739,11 @@ class Driver:
                 if self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE and self.max_length < 10000:
                     self.max_length = 10000
         elif self.model is not None and self.args.model_type != Settings.GPT2_MODEL_TYPE:
-            self.max_length = self.model.get_config().max_length
+            if self.model.get_config() is not None:
+                self.max_length = self.model.get_config().max_length
+            else:
+                assert self.args.max_length > 0, "max_length must be specified when loading a model without a config"
+                self.max_length = self.args.max_length
         elif self.args.model_type == Settings.GPT2_MODEL_TYPE:
             if self.args.max_length > 0:
                 self.max_length = self.args.max_length
