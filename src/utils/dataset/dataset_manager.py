@@ -269,10 +269,10 @@ class DatasetManager:
         return equivalency_set            
 
     def get_training_count(self, training_dataset_ratio):
-        return DatasetUtils.get_training_count(training_dataset_ratio, len(self.__dataset_unwrapped))
+        return DatasetUtils.get_training_count(training_dataset_ratio, len(self.__dataset))
 
     def get_datapoint_count(self):
-        return len(self.__dataset_unwrapped)
+        return len(self.__dataset)
 
     def get_go_term_count(self):
         return self.__go_term_count
