@@ -166,8 +166,8 @@ class DatasetManager:
             self.__training_cluster_stats = self.__get_cluster_stats(self.__training_prot_ids)
             self.__validation_cluster_stats = self.__get_cluster_stats(self.__validation_prot_ids)
 
-            self.__training_based_cluster_split_stat = self.__compute_cluster_split_stats(self.__training_cluster_stats, self.__validation_cluster_stats)
-            self.__validation_based_cluster_split_stat = self.__compute_cluster_split_stats(self.__validation_cluster_stats, self.__training_cluster_stats)
+            self.__training_based_cluster_split_stat = self.__compute_cluster_split_stats(self.__training_prot_ids, self.__validation_cluster_stats)
+            self.__validation_based_cluster_split_stat = self.__compute_cluster_split_stats(self.__validation_prot_ids, self.__training_cluster_stats)
             
             self.__report_cluster_stats()
             self.__split_validation_set_based_on_cluster()
@@ -227,17 +227,22 @@ class DatasetManager:
             return None
         
         return self.__get_cluster_ids_of_prot_id(prot_id)
-        
-    
-    def __compute_cluster_split_stats(self, cluster_stats1, cluster_stats2):
+    def __compute_cluster_split_stats(self, prot_ids, other_cluster_stats):
         result = 0
-        for cluster in cluster_stats1:
-            if cluster == "unknown":
+
+        for prot_id in prot_ids:
+            cluster_ids = self.__get_cluster_ids_of_prot_id(prot_id)
+
+            if cluster_ids is None:
                 continue
-            if cluster in cluster_stats2:
-                result += cluster_stats1[cluster]
+            
+            for cluster_id in cluster_ids:
+                if cluster_id in other_cluster_stats:
+                    result += 1
+                    break
+
         return result
-    
+
     def __extract_prot_ids_from_dataset(self, dataset):
         prot_ids = set()
         for prot_sequence, _ in dataset:
