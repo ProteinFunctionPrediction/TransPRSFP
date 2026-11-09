@@ -6,7 +6,7 @@ from utils.model.residue_classifiers_common.residue_classifier_trainer import Re
 
 class MLPResidueClassifierTrainer(ResidueClassifierTrainer):
     def __init__(self, encoder_model=None, encoder_model_is_fixed=True, *args, **kwargs):
-        super().__init__(encoder_model, encoder_moel_is_fixed, *args, **kwargs)
+        super().__init__(encoder_model, encoder_model_is_fixed, *args, **kwargs)
 
     def compute_loss(self, model, inputs, return_outputs=False):
         if self.encoder_model:
