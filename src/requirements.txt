@@ -4,3 +4,5 @@ transformers==4.25.1
 evaluate==0.4.3
 scikit-learn==1.2.0
 sentencepiece==0.1.97
+zarr==2.16.1
+numcodecs==0.12.1
