@@ -40,7 +40,7 @@ class ZarrEmbeddingCollator:
         batch = default_data_collator(other_features)
 
         src_length = int(batch["prot_attention_mask"].sum(dim=1).max().item())
-        tgt_length = int((batch["go_input_ids"] != Settings.TRANSFORMER_TRG_PAD_IDX).sum(dim=1).max().item())
+        tgt_length = int((batch["go_input_ids"] != Settings.GO_LABEL_IGNORE_INDEX).sum(dim=1).max().item())
 
         if "labels" in batch:
             batch["labels"] = batch["labels"][:, :src_length]
@@ -49,6 +49,8 @@ class ZarrEmbeddingCollator:
         batch["prot_attention_mask"] = batch["prot_attention_mask"][:, :src_length]
 
         batch["go_input_ids"] = batch["go_input_ids"][:, :tgt_length]
+        if "decoder_input_ids" in batch:
+            batch["decoder_input_ids"] = batch["decoder_input_ids"][:, :tgt_length]
 
         batch_size = len(features)
         last_hidden_states = np.zeros((batch_size, src_length, self.embedding_dim), dtype=np.float32)

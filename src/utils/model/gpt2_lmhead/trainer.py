@@ -26,6 +26,7 @@ class GPT2LMHeadTrainer(Trainer):
 
     def compute_loss(self, model, inputs, return_outputs=False):
         input_sequence = inputs["go_input_ids"]
+        decoder_input_ids = inputs["decoder_input_ids"]
         if self.encoder_model:
             if self.encoder_model_is_fixed:
                 self.encoder_model.eval()
@@ -36,7 +37,7 @@ class GPT2LMHeadTrainer(Trainer):
         else:
             last_hidden_state = inputs["last_hidden_states"]
 
-        outputs = model(input_ids=input_sequence, encoder_hidden_states=last_hidden_state, encoder_attention_mask=inputs["prot_attention_mask"], labels=input_sequence)
+        outputs = model(input_ids=decoder_input_ids, encoder_hidden_states=last_hidden_state, encoder_attention_mask=inputs["prot_attention_mask"], labels=input_sequence)
         if self.custom_weights is None:
             return (outputs.loss, outputs) if return_outputs else outputs.loss
         else:
@@ -48,6 +49,7 @@ class GPT2LMHeadTrainer(Trainer):
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
         model_inputs = {
             "go_input_ids": inputs["go_input_ids"],
+            "decoder_input_ids": inputs["decoder_input_ids"],
             "prot_input_ids": inputs["prot_input_ids"],
             "prot_attention_mask": inputs["prot_attention_mask"],
             "labels": inputs["go_input_ids"] if "labels" not in inputs else inputs["labels"],

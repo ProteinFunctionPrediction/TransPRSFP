@@ -24,12 +24,12 @@ class DatasetUtils:
             tokenized_sequences_attention_mask = np.asarray(batch_encode_plus_output["attention_mask"])
             batch_go_term_sequences = batch[:, 1]
             if target_tokenizer is not None:
-                tokenized_go_terms = pad_sequences(target_tokenizer.texts_to_sequences(batch_go_term_sequences), padding='post', maxlen=maxlen + 2, truncating='post')
+                tokenized_go_terms = pad_sequences(target_tokenizer.texts_to_sequences(batch_go_term_sequences), padding='post', maxlen=maxlen + 2, truncating='post', value=Settings.GO_LABEL_IGNORE_INDEX)
                 #print("USING TARGET_TOKENIZER")
             else:
                 tokenized_go_terms = []
                 for i in range(batch.shape[0]):
-                    tokenized_go_terms.append([Settings.TRANSFORMER_TRG_PAD_IDX])
+                    tokenized_go_terms.append([Settings.GO_LABEL_IGNORE_INDEX])
             
             idx += batch_size
 

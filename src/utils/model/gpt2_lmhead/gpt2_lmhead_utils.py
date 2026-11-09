@@ -55,7 +55,7 @@ class GPT2LMHeadUtils(ResidueClassifierUtils):
                 next_token_logits = pred.logits[-1, :]
                 next_token_logits[SOS_token] = -1e20
                 next_token_logits[EOS_token] = -1e20
-                next_token_logits[Settings.TRANSFORMER_TRG_PAD_IDX] = -1e20
+                next_token_logits[Settings.GO_INPUT_PAD_ID] = -1e20
                 next_token = torch.argmax(next_token_logits, dim=-1)
 
                 prediction.append(next_token)

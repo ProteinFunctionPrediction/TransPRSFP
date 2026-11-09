@@ -462,6 +462,7 @@ class Driver:
                                             self.args.save_per_epoch, self.args.model_save_dir)
         
         elif self.args.model_type == Settings.TRANSFORMER_MODEL_TYPE:
+            assert False, "obsolete"
             n_train = self.dataset_manager.get_training_count(self.args.training_dataset_ratio)
             
             weight_setter = WeightSetter(self.dataset_manager.get_unwrapped_dataset(),
@@ -528,7 +529,8 @@ class Driver:
             n_train = self.dataset_manager.get_training_count(self.args.training_dataset_ratio)
 
             if Settings.GPT2_USE_CUSTOM_WEIGHTS:
-                weight_setter = WeightSetter(self.dataset, self.tf_tokenizer_fit_on_dataset, len(self.tf_tokenizer_fit_on_dataset.word_index) + 1, Settings.TRANSFORMER_TRG_PAD_IDX)
+                assert False, "Obsolete. Reason: pad id is now -100 and it would not work inside WeightSetter. This should be reflected at the custom loss computation instead"
+                weight_setter = WeightSetter(self.dataset, self.tf_tokenizer_fit_on_dataset, len(self.tf_tokenizer_fit_on_dataset.word_index) + 1, Settings.GO_LABEL_IGNORE_INDEX)
                 weights = torch.tensor(weight_setter.get_weights()).to(self.args.device)
             else:
                 weights = None
@@ -848,7 +850,7 @@ class Driver:
                 pred = pred[:-1]
                 label = label[1:]
             
-            pred, label = self.truncate_padding(pred, label, Settings.TRANSFORMER_TRG_PAD_IDX)
+            pred, label = self.truncate_padding(pred, label, Settings.GO_LABEL_IGNORE_INDEX)
 
             current_accuracy = self.accuracy_metric.compute(predictions=pred, references=label)
         

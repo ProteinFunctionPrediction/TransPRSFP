@@ -95,7 +95,8 @@ class ResidueClassifierUtils(ModelUtils, ABC):
             probs = []
 
         # reverse_word_index maps ids to strings
-        total_go_term_count = len(pred_reverse_word_index) - 1
+        # -3 for <OOV>, <sos>, and <eos>, -1 for <empty>
+        total_go_term_count = len(pred_reverse_word_index) - 3 - 1
         dataloader = batches
         predictions = []
 
@@ -142,7 +143,7 @@ class ResidueClassifierUtils(ModelUtils, ABC):
                                                        device=self.device).unsqueeze(0)
 
                 sample_y = torch.tensor(dataloader[idx]["go_input_ids"], dtype=torch.long, device=self.device)
-                sample_y = sample_y[sample_y != Settings.TRANSFORMER_TRG_PAD_IDX]
+                sample_y = sample_y[sample_y != Settings.GO_LABEL_IGNORE_INDEX]
 
                 if len(sample_y) > 0 and sample_y[0] == true_SOS_token_id:
                     sample_y = sample_y[1:]

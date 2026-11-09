@@ -69,6 +69,7 @@ class DriverUtils:
                                         classification_model_reverse_go_term_to_index,
                                         transformer_model_go_term_to_index,
                                         transformer_model_reverse_go_term_to_index):
+        assert False, "obsolete"
         metrics = {"precision": 0, "recall": 0, "f1": 0}
         for idx in range(len(classification_predictions)):
             protein_sequence = driver.dataset[idx][0].replace(" ", "")
@@ -90,7 +91,7 @@ class DriverUtils:
             groundtruth_tokens = driver.dataset[idx][1].split()[1:-1] # exclude <sos> and <eos> tokens at the beginning and the end
             fp, tp, fn, tn = Utils.get_fp_tp_fn_tn(groundtruth_tokens,
                                                    merged_prediction,
-                                                   0,
+                                                   Settings.TRANSFORMER_TRG_PAD_IDX,
                                                    pred_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper(),
                                                    true_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper())
             precision_score, recall_score = Utils.precision(tp, fp), Utils.recall(tp, fn)
@@ -110,6 +111,7 @@ class DriverUtils:
                                                  classification_predictions,
                                                  classification_model_go_term_to_index,
                                                  classification_model_reverse_go_term_to_index):
+        assert False, "obsolete"
         metrics = {"precision": 0, "recall": 0, "f1": 0}
         for idx in range(len(classification_predictions)):
             protein_sequence = driver.dataset[idx][0].replace(" ", "")
@@ -126,7 +128,7 @@ class DriverUtils:
             groundtruth_tokens = driver.dataset[idx][1].split()[1:-1] # exclude <sos> and <eos> tokens at the beginning and the end
             fp, tp, fn, tn = Utils.get_fp_tp_fn_tn(groundtruth_tokens,
                                                    merged_prediction,
-                                                   0,
+                                                   Settings.TRANSFORMER_TRG_PAD_IDX,
                                                    true_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper(),
                                                    pred_empty_token=Settings.TRANSFORMER_EMPTY_TOKEN.upper())
             precision_score, recall_score = Utils.precision(tp, fp), Utils.recall(tp, fn)

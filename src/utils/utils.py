@@ -82,7 +82,7 @@ class Utils:
         return result
 
     @staticmethod
-    def get_fp_tp_fn_tn(y_true, y_pred, total_go_term_count, trg_pad_idx = -1, true_empty_token=-1, pred_empty_token=-1):
+    def get_fp_tp_fn_tn(y_true, y_pred, total_go_term_count, trg_pad_idx = Settings.GO_LABEL_IGNORE_INDEX, true_empty_token=-1, pred_empty_token=-1):
         fp, tp, fn = 0, 0, 0
                 
         if type(y_true) == torch.Tensor:
@@ -193,7 +193,7 @@ class Utils:
                         go_based_metrics[true_token]["fn"] += 1
 
     @staticmethod
-    def get_fp_tp_fn_tn_token_based_reg2go_analysis(go_map, y_pred, total_go_term_count, trg_pad_idx = 0, true_empty_token=-1, pred_empty_token=-1):
+    def get_fp_tp_fn_tn_token_based_reg2go_analysis(go_map, y_pred, total_go_term_count, trg_pad_idx = Settings.GO_LABEL_IGNORE_INDEX, true_empty_token=-1, pred_empty_token=-1):
         fp, tp, fn, tn = 0, 0, 0, 0
         
         if type(y_pred) == torch.Tensor:
@@ -221,7 +221,7 @@ class Utils:
             
     
     @staticmethod
-    def get_fp_tp_fn_tn_token_based(y_true, y_pred, total_go_term_count, trg_pad_idx = 0, true_empty_token=-1, pred_empty_token=-1):
+    def get_fp_tp_fn_tn_token_based(y_true, y_pred, total_go_term_count, trg_pad_idx = Settings.GO_LABEL_IGNORE_INDEX, true_empty_token=-1, pred_empty_token=-1):
         fp, tp, fn, tn = 0, 0, 0, 0
             
         if type(y_true) == torch.Tensor:

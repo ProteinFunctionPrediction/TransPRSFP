@@ -39,7 +39,7 @@ class MLPResidueClassifierUtils(ResidueClassifierUtils):
         residue_count = int(input_attention_mask.sum().item()) - 1
         logits = logits[:residue_count]
 
-        invalid_ids = [Settings.TRANSFORMER_TRG_PAD_IDX, SOS_token, EOS_token, OOV_token]
+        invalid_ids = [Settings.GO_INPUT_PAD_ID, SOS_token, EOS_token, OOV_token]
         logits[:, invalid_ids] = -torch.inf
         predicted_ids = logits.argmax(dim=-1)
 

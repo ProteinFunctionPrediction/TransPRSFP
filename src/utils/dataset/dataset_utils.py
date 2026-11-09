@@ -57,6 +57,8 @@ class DatasetUtils:
         target_tokenizer -- a tf.keras.preprocessing.text.Tokenizer that is fit to the output GO terms
         """
         
+        assert False, "obsolete"
+
         idx = 0
         while idx < len(dataset):
             ret = []

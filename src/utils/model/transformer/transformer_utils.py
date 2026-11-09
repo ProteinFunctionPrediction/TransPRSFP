@@ -20,6 +20,7 @@ from model.model_navigator import ModelNavigator
 class TransformerUtils(ModelUtils):
     def __init__(self, device) -> None:
         super().__init__(device)
+        assert False, "obsolete"
     
     def run_transformer_prediction(self,
                                    batches,
@@ -39,6 +40,7 @@ class TransformerUtils(ModelUtils):
                                    save_go_based_metrics=True,
                                    go_based_metrics_filepath="",
                                    compute_metrics=False):
+        assert False, "obsolete"
     
         if compute_metrics:
             assert true_SOS_token_id is not None

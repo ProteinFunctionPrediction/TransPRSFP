@@ -16,3 +16,5 @@ class Settings:
     TRANSFORMER_NUM_LAYERS = 6
     TRANSFORMER_HEADS = 8
     GPT2_USE_CUSTOM_WEIGHTS = False
+    GO_INPUT_PAD_ID = 0
+    GO_LABEL_IGNORE_INDEX = -100 # GPT2 ignores -100 by default

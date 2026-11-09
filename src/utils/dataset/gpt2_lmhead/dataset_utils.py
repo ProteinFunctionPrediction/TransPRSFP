@@ -1,6 +1,8 @@
 from universal.settings.settings import Settings
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from utils.utils import Utils
+import numpy as np
+import torch
 
 class DatasetUtils:
     @staticmethod
@@ -13,7 +15,8 @@ class DatasetUtils:
         source_tokenizer -- a T5Tokenizer pretrained on a protein sequence dataset
         target_tokenizer -- a tf.keras.preprocessing.text.Tokenizer that is fit to the output GO terms
         """
-        
+        assert False, "obsolete"
+
         idx = 0
         while idx < len(dataset):
             ret = {}
@@ -71,11 +74,11 @@ class DatasetUtils:
 
             batch_go_term_sequences = batch[:, 1]
             if target_tokenizer is not None:
-                tokenized_go_terms = pad_sequences(target_tokenizer.texts_to_sequences(batch_go_term_sequences), padding='post', maxlen=maxlen + 2, truncating='post')
+                tokenized_go_terms = pad_sequences(target_tokenizer.texts_to_sequences(batch_go_term_sequences), padding='post', maxlen=maxlen + 2, truncating='post', value=Settings.GO_LABEL_IGNORE_INDEX)
             else:
                 tokenized_go_terms = []
                 for i in range(batch.shape[0]):
-                    tokenized_go_terms.append([Settings.TRANSFORMER_TRG_PAD_IDX])
+                    tokenized_go_terms.append([Settings.GO_LABEL_IGNORE_INDEX])
 
             idx += batch_size
 
@@ -86,6 +89,9 @@ class DatasetUtils:
                 ret["prot_input_ids"] = tokenized_sequences[i]
                 ret["prot_attention_mask"] = tokenized_sequences_attention_mask[i]
                 ret["go_input_ids"] = tokenized_go_terms.tolist()[i]
+                labels = ret["go_input_ids"]
+                labels_t = torch.as_tensor(np.asarray(labels))
+                ret["decoder_input_ids"] = labels_t.masked_fill(labels_t == Settings.GO_LABEL_IGNORE_INDEX, Settings.GO_INPUT_PAD_ID).tolist()
                 if embedding_offset_lookup_table is not None:
                     prot_sequence_hash = Utils.hash_prot_seq(prot_sequence)
                     offset, length = embedding_offset_lookup_table[prot_sequence_hash]
