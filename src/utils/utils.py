@@ -144,23 +144,26 @@ class Utils:
         except AssertionError as e:
             print(len(y_true), len(y_pred))
             assert len(y_true) == len(y_pred) # let the execution terminate
-            
+
+        for metrics in go_based_metrics.values():
+            metrics["tn"] += len(y_true)
+        
         for i in range(len(y_true)):
             true_token = y_true[i]
             pred_token = y_pred[i]
 
-            for go_term, metrics in go_based_metrics.items():
-                metrics["tn"] += 1
+            go_based_metrics_true_token = go_based_metrics[true_token.lower()]
 
             if true_token == pred_token:                
-                go_based_metrics[true_token.lower()]["tn"] -= 1 # to neutralize the operation above on the correctly predicted token
-                go_based_metrics[true_token.lower()]["tp"] += 1
+                go_based_metrics_true_token["tn"] -= 1 # to neutralize the operation above on the correctly predicted token
+                go_based_metrics_true_token["tp"] += 1
             else:
-                go_based_metrics[pred_token.lower()]["tn"] -= 1 # to neutralize the operation above on the predicted token
-                go_based_metrics[true_token.lower()]["tn"] -= 1 # to neutralize the operation above on the true token
+                go_based_metrics_pred_token = go_based_metrics[pred_token.lower()]
+                go_based_metrics_pred_token["tn"] -= 1 # to neutralize the operation above on the predicted token
+                go_based_metrics_true_token["tn"] -= 1 # to neutralize the operation above on the true token
                 
-                go_based_metrics[pred_token.lower()]["fp"] += 1
-                go_based_metrics[true_token.lower()]["fn"] += 1
+                go_based_metrics_pred_token["fp"] += 1
+                go_based_metrics_true_token["fn"] += 1
     
     @staticmethod
     def update_go_based_metrics_reg2go_map(go_map, y_pred, go_based_metrics):

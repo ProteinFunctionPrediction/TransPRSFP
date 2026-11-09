@@ -78,11 +78,14 @@ class ResidueClassifierUtils(ModelUtils, ABC):
                        return_probs=False,
                        keep_top=10,
                        embeddings=None,
-                       embedding_offset_lookup_table=None):
+                       embedding_offset_lookup_table=None,
+                       suppress_dict_print=False):
 
         if dataset_like_region2go_path != "" and os.path.isfile(dataset_like_region2go_path):
             with open(dataset_like_region2go_path, "rb") as f:
                 dataset_like_region2go = pickle.load(f)
+            total_go_term_count_from_reg2go = Utils.compute_total_go_term_count_from_reg2go(
+                                        dataset_like_region2go)
         else:
             dataset_like_region2go = None
 
@@ -200,8 +203,6 @@ class ResidueClassifierUtils(ModelUtils, ABC):
                     f1_score = Utils.f1(precision_score, recall_score)
 
                     if dataset_like_region2go is not None:
-                        total_go_term_count_from_reg2go = Utils.compute_total_go_term_count_from_reg2go(
-                            dataset_like_region2go)
                         if "prot_sequence" in dataloader[idx]:
                             protein_sequence_with_spaces = dataloader[idx]["prot_sequence"]
                         else:
@@ -337,7 +338,7 @@ class ResidueClassifierUtils(ModelUtils, ABC):
                         f"An error occurred while saving GO term-based metrics to {os.path.abspath(go_based_metrics_filepath)}: {str(e)}")
                 else:
                     print(f"GO term-based metrics have been saved to {os.path.abspath(go_based_metrics_filepath)}")
-        elif compute_go_based_metrics:
+        elif compute_go_based_metrics and not suppress_dict_print:
             print("GO term-based metrics:")
             print(go_based_metrics)
 
@@ -355,7 +356,7 @@ class ResidueClassifierUtils(ModelUtils, ABC):
                 else:
                     print(
                         f"GO term-based reg2go metrics have been saved to {os.path.abspath(go_based_metrics_reg2go_filepath)}")
-        elif dataset_like_region2go is not None and compute_go_based_metrics:
+        elif dataset_like_region2go is not None and compute_go_based_metrics and not suppress_dict_print:
             print("GO term-based reg2go metrics:")
             print(go_based_metrics_reg2go)
 

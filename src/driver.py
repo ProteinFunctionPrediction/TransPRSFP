@@ -934,7 +934,8 @@ class Driver:
                                                                             prefix="training_inference_",
                                                                             dataset_like_region2go_path=self.args.dataset_like_region2go,
                                                                             embeddings=None if not self.args.embedding_store else self.embeddings,
-                                                                            embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table)
+                                                                            embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table,
+                                                                            suppress_dict_print=True)
 
         UniversalAccess.output.write("Running inference on validation set...")
         validation_average_metrics, _ = self.utils_for_compute_metrics.run_prediction(batches=validation_batches,
@@ -957,7 +958,8 @@ class Driver:
                                                                               prefix="validation_inference_",
                                                                               dataset_like_region2go_path=self.args.dataset_like_region2go,
                                                                               embeddings=None if not self.args.embedding_store else self.embeddings,
-                                                                              embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table)
+                                                                              embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table,
+                                                                              suppress_dict_print=True)
         
         close_validation_average_metrics = None
         if close_validation_batches is not None and len(self._close_validation_set) > 0:
@@ -982,7 +984,8 @@ class Driver:
                                                                                         prefix="close_validation_inference_",
                                                                                         dataset_like_region2go_path=self.args.dataset_like_region2go,
                                                                                         embeddings=None if not self.args.embedding_store else self.embeddings,
-                                                                                        embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table)
+                                                                                        embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table,
+                                                                                        suppress_dict_print=True)
 
         distant_validation_average_metrics = None
         if distant_validation_batches is not None and len(self._distant_validation_set) > 0:
@@ -1007,7 +1010,8 @@ class Driver:
                                                                                           prefix="distant_validation_inference_",
                                                                                           dataset_like_region2go_path=self.args.dataset_like_region2go,
                                                                                           embeddings=None if not self.args.embedding_store else self.embeddings,
-                                                                                          embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table)
+                                                                                          embedding_offset_lookup_table=None if not self.args.embedding_store else self.embedding_offset_lookup_table,
+                                                                                          suppress_dict_print=True)
 
 
         result = {'accuracy': accuracy_sum/len(predictions),
