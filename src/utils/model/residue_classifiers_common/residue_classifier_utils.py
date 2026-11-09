@@ -3,6 +3,7 @@ from utils.model.model_utils import ModelUtils
 from utils.utils import Utils
 from universal.settings.settings import Settings
 from universal.access.universal_access import UniversalAccess
+from lib import metrics
 
 import os
 import pickle
@@ -357,6 +358,58 @@ class ResidueClassifierUtils(ModelUtils, ABC):
         elif dataset_like_region2go is not None and compute_go_based_metrics:
             print("GO term-based reg2go metrics:")
             print(go_based_metrics_reg2go)
+
+        if compute_go_based_metrics:
+            if dataset_like_region2go is not None:
+                total_tp_reg2go, total_fp_reg2go, total_tn_reg2go, total_fn_reg2go = metrics.compute_total_tp_fp_tn_fn(go_based_metrics_reg2go)
+                total_based_precision_reg2go = metrics.precision(total_tp_reg2go, total_fp_reg2go)
+                total_based_recall_reg2go = metrics.recall(total_tp_reg2go, total_fn_reg2go)
+                total_based_f1_reg2go = metrics.f1(total_tp_reg2go, total_fp_reg2go, total_fn_reg2go)
+                total_based_accuracy_reg2go = metrics.accuracy(total_fp_reg2go, total_tp_reg2go, total_fn_reg2go, total_tn_reg2go)
+                go_reg2go = metrics.compute_metrics(go_based_metrics_reg2go)[1]
+                go_based_mean_reg2go = metrics.calculate_average_values(go_reg2go)
+                go_based_mean_precision_reg2go = go_based_mean_reg2go['precision']
+                go_based_mean_recall_reg2go = go_based_mean_reg2go['recall']
+                go_based_mean_f1_reg2go = go_based_mean_reg2go['f1']
+                go_based_mean_accuracy_reg2go = go_based_mean_reg2go['accuracy']
+
+                average_metrics[prefix + "total_tp_reg2go"] = total_tp_reg2go
+                average_metrics[prefix + "total_fp_reg2go"] = total_fp_reg2go
+                average_metrics[prefix + "total_tn_reg2go"] = total_tn_reg2go
+                average_metrics[prefix + "total_fn_reg2go"] = total_fn_reg2go
+                average_metrics[prefix + "total_based_precision_reg2go"] = total_based_precision_reg2go
+                average_metrics[prefix + "total_based_recall_reg2go"] = total_based_recall_reg2go
+                average_metrics[prefix + "total_based_f1_reg2go"] = total_based_f1_reg2go
+                average_metrics[prefix + "total_based_accuracy_reg2go"] = total_based_accuracy_reg2go
+                average_metrics[prefix + "go_based_mean_precision_reg2go"] = go_based_mean_precision_reg2go
+                average_metrics[prefix + "go_based_mean_recall_reg2go"] = go_based_mean_recall_reg2go
+                average_metrics[prefix + "go_based_mean_f1_reg2go"] = go_based_mean_f1_reg2go
+                average_metrics[prefix + "go_based_mean_accuracy_reg2go"] = go_based_mean_accuracy_reg2go
+
+            total_tp, total_fp, total_tn, total_fn = metrics.compute_total_tp_fp_tn_fn(go_based_metrics)
+            total_based_precision = metrics.precision(total_tp, total_fp)
+            total_based_recall = metrics.recall(total_tp, total_fn)
+            total_based_f1 = metrics.f1(total_tp, total_fp, total_fn)
+            total_based_accuracy = metrics.accuracy(total_fp, total_tp, total_fn, total_tn)
+            go = metrics.compute_metrics(go_based_metrics)[1]
+            go_based_mean = metrics.calculate_average_values(go)
+            go_based_mean_precision = go_based_mean['precision']
+            go_based_mean_recall = go_based_mean['recall']
+            go_based_mean_f1 = go_based_mean['f1']
+            go_based_mean_accuracy = go_based_mean['accuracy']
+
+            average_metrics[prefix + "total_tp"] = total_tp
+            average_metrics[prefix + "total_fp"] = total_fp
+            average_metrics[prefix + "total_tn"] = total_tn
+            average_metrics[prefix + "total_fn"] = total_fn
+            average_metrics[prefix + "total_based_precision"] = total_based_precision
+            average_metrics[prefix + "total_based_recall"] = total_based_recall
+            average_metrics[prefix + "total_based_f1"] = total_based_f1
+            average_metrics[prefix + "total_based_accuracy"] = total_based_accuracy
+            average_metrics[prefix + "go_based_mean_precision"] = go_based_mean_precision
+            average_metrics[prefix + "go_based_mean_recall"] = go_based_mean_recall
+            average_metrics[prefix + "go_based_mean_f1"] = go_based_mean_f1
+            average_metrics[prefix + "go_based_mean_accuracy"] = go_based_mean_accuracy
 
         if return_probs:
             return average_metrics, predictions, probs
