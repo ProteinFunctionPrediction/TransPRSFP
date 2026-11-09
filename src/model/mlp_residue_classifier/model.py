@@ -4,9 +4,11 @@ import torch.nn.functional as F
 
 from transformers.modeling_outputs import TokenClassifierOutput
 from model.model import Model
+from universal.settings.settings import Settings
+
 
 class MLPResidueClassifier(nn.Module, Model):
-    def __init__(self, num_labels, input_size=1024, hidden_sizes=(512,), dropout=0.1, ignore_index=-100, encoder_model=None):
+    def __init__(self, num_labels, input_size=1024, hidden_sizes=(512,), dropout=0.1, ignore_index=Settings.GO_LABEL_IGNORE_INDEX, encoder_model=None):
         nn.Module.__init__(self)
         Model.__init__(self)
 

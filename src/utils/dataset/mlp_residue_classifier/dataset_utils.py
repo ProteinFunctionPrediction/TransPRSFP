@@ -54,7 +54,7 @@ class DatasetUtils:
                 yield ret
 
     @staticmethod
-    def construct_residue_labels(go_input_ids, prot_attention_mask, ignore_index=-100):
+    def construct_residue_labels(go_input_ids, prot_attention_mask, ignore_index=Settings.GO_LABEL_IGNORE_INDEX):
         go_input_ids = torch.tensor(np.asarray(go_input_ids))
         prot_attention_mask = torch.tensor(np.asarray(prot_attention_mask))
 
