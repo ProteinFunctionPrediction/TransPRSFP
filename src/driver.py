@@ -50,6 +50,7 @@ from zarr.storage import NestedDirectoryStore
 import zarr
 from transformers import default_data_collator
 from utils.collator.zarr_embedding_collator import ZarrEmbeddingCollator
+from utils.collator.plain_collator import PlainCollator
 from utils.driver.driver_utils import DriverUtils
 
 class EncoderType(Enum):
@@ -665,7 +666,7 @@ class Driver:
             if self.args.embedding_store:
                 selected_data_collator = ZarrEmbeddingCollator(store_path=self.args.embedding_store, cache_bytes=None)
             else:
-                selected_data_collator = default_data_collator
+                selected_data_collator = PlainCollator()
 
             if self.args.model_type == Settings.GPT2_MODEL_TYPE:
                 gpt2_lm_head_trainer_args_dict = {'encoder_model': self.encoder_model.to(self.args.device) if self.encoder_model else self.encoder_model,
