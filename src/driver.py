@@ -27,6 +27,7 @@ from model.transformer.config.transformer_model_config import TransformerModelCo
 from model.gpt2_lmhead.config.gpt2_lmhead_model_config import Gpt2LMHeadModelConfig
 from model.mlp_residue_classifier.model import MLPResidueClassifier
 import pickle
+import random
 
 from torch.utils.data import DataLoader
 import numpy as np
@@ -702,33 +703,40 @@ class Driver:
             
             trainer.args._n_gpu = 1
             if self.args.continue_from_checkpoint is not None:
-                if trainer.optimizer is None:
-                    trainer.create_optimizer()
-                    print("created trainer optimizer", trainer.optimizer is not None)
-                
                 optimizer_state_dict = torch.load(os.path.join(self.args.continue_from_checkpoint, "optimizer.pt"))
+                scheduler_state_dict = torch.load(os.path.join(self.args.continue_from_checkpoint, "scheduler.pt"))
+
+                with open(os.path.join(self.args.continue_from_checkpoint, "trainer_state.json")) as f:
+                    trainer_state_dict = json.load(f)
+                
+                original_total_steps = scheduler_state_dict.get("original_num_training_steps")
+                if original_total_steps is None:
+                    original_total_steps = trainer_state_dict["max_steps"]
+
+                trainer.create_optimizer()
+                print("created trainer optimizer", trainer.optimizer is not None)
+                
+                trainer.create_scheduler(num_training_steps=original_total_steps)
+                print("created trainer scheduler", trainer.lr_scheduler is not None)
+
+                trainer.optimizer.load_state_dict(optimizer_state_dict)
+                trainer.lr_scheduler.load_state_dict(scheduler_state_dict)
+
+                trainer.lr_scheduler.original_num_training_steps = original_total_steps
+                
                 current_params = sum(len(g["params"]) for g in trainer.optimizer.param_groups)
                 saved_params = sum(len(g["params"]) for g in optimizer_state_dict["param_groups"])
                 print(f"current_params: {current_params}, saved_params: {saved_params}")
                 assert current_params == saved_params
-                trainer.optimizer.load_state_dict(optimizer_state_dict)
-                print("loaded optimizer")
-                #trainer.create_optimizer()
 
+                saved_rng_state = torch.load(os.path.join(self.args.continue_from_checkpoint, "rng_state.pth"))
 
+                random.setstate(saved_rng_state["python"])
+                np.random.set_state(saved_rng_state["numpy"])
+                torch.set_rng_state(saved_rng_state["cpu"])
 
-                with open(os.path.join(self.args.continue_from_checkpoint, "trainer_state.json")) as f:
-                    trainer_state_dict = json.loads(f.read())
-                
-                max_steps = trainer_state_dict["max_steps"]
-                
-                if trainer.lr_scheduler is None:
-                    trainer.create_scheduler(num_training_steps=max_steps)
-                    print("created trainer scheduler", trainer.lr_scheduler is not None)
-
-                trainer.lr_scheduler.load_state_dict(torch.load(os.path.join(self.args.continue_from_checkpoint, "scheduler.pt")))
-                print("loaded scheduler")
-                
+                if "cuda" in saved_rng_state:
+                    torch.cuda.set_rng_state_all(saved_rng_state["cuda"])
 
             trainer.train()
 

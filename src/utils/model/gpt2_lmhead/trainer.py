@@ -5,24 +5,16 @@ import torch
 from utils.utils import Utils
 import numpy as np
 from transformers.trainer_pt_utils import LengthGroupedSampler
+from utils.model.residue_classifiers_common.residue_classifier_trainer import ResidueClassifierTrainer
 
-class GPT2LMHeadTrainer(Trainer):
+class GPT2LMHeadTrainer(ResidueClassifierTrainer):
     def __init__(self, encoder_model=None, encoder_model_is_fixed=True, custom_weights=None, embeddings=None, embedding_offset_lookup_table=None, device_from_args=None, t5_tokenizer=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.encoder_model = encoder_model
-        self.encoder_model_is_fixed = encoder_model_is_fixed
+        super().__init__(encoder_model, encoder_model_is_fixed, *args, **kwargs)
         self.custom_weights = custom_weights
         self.__embeddings = embeddings
         self.__embedding_offset_lookup_table = embedding_offset_lookup_table
         self.__device = device_from_args
         self.__t5_tokenizer = t5_tokenizer
-
-    def _get_train_sampler(self):
-        if self.args.group_by_length:
-            lengths = [int(torch.as_tensor(x["prot_attention_mask"]).sum().item()) for x in self.train_dataset.data]
-            return LengthGroupedSampler(batch_size=self.args.train_batch_size * self.args.gradient_accumulation_steps, lengths=lengths)
-
-        return super()._get_train_sampler()
 
     def compute_loss(self, model, inputs, return_outputs=False):
         input_sequence = inputs["go_input_ids"]
