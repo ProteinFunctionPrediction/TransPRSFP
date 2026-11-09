@@ -210,14 +210,23 @@ class DatasetManager:
         self.__distant_validation_set = np.asarray(distant_validation_set, dtype=object)
         self.__close_validation_set = np.asarray(close_validation_set, dtype=object)
         
-        
-    
+
+    def __get_cluster_ids_of_prot_id(self, prot_id):
+        cluster_ids = self.__cluster_mapping.get(prot_id, None)
+        if cluster_ids is None and self.__equivalent_prot_id_list is not None and self.__equivalent_prot_id_index_map is not None:
+            prot_id_syns = self.__get_prot_ids_synonyms(prot_id)
+            for pid in prot_id_syns:
+                cluster_ids = self.__cluster_mapping.get(pid, None)
+                if cluster_ids is not None:
+                    break
+        return cluster_ids
+
     def __get_cluster_ids_of_prot_seq(self, prot_seq):
         prot_id = self.__prot_seq_to_id_index.get(prot_seq, None)
         if prot_id is None:
             return None
         
-        return self.__cluster_mapping.get(prot_id, None)
+        return self.__get_cluster_ids_of_prot_id(prot_id)
         
     
     def __compute_cluster_split_stats(self, cluster_stats1, cluster_stats2):
@@ -240,13 +249,7 @@ class DatasetManager:
     def __get_cluster_stats(self, prot_ids):
         stats = {"unknown": 0}
         for prot_id in prot_ids:
-            cluster_ids = self.__cluster_mapping.get(prot_id, None)
-            if cluster_ids is None and self.__equivalent_prot_id_list is not None and self.__equivalent_prot_id_index_map is not None:
-                prot_id_syns = self.__get_prot_ids_synonyms(prot_id)
-                for pid in prot_id_syns:
-                    cluster_ids = self.__cluster_mapping.get(pid, None)
-                    if cluster_ids is not None:
-                        break
+            cluster_ids = self.__get_cluster_ids_of_prot_id(prot_id)
             
             if cluster_ids is None:
                 stats["unknown"] += 1
